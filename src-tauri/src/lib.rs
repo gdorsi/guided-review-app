@@ -32,6 +32,7 @@ pub fn run() {
             start_session_cmd,
             send_message_cmd,
             start_section_task_cmd,
+            start_section_chat_cmd,
             end_session_cmd,
             get_file_at_ref_cmd,
             get_diff_cmd,

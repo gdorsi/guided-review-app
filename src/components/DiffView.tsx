@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+	useCallback,
+	useDeferredValue,
+	useEffect,
+	useMemo,
+	useRef,
+	useState,
+} from "react";
 import { MultiFileDiff } from "@pierre/diffs/react";
 import type { DiffLineAnnotation } from "@pierre/diffs";
 import {
@@ -360,9 +367,11 @@ export function DiffPane() {
 	const pushError = useApp((s) => s.pushError);
 	const publishedComments = useApp((s) => s.publishedComments);
 
+	const deferredCurrentId = useDeferredValue(currentId);
+
 	const current = useMemo(
-		() => sections.find((s) => s.id === currentId) ?? null,
-		[sections, currentId],
+		() => sections.find((s) => s.id === deferredCurrentId) ?? null,
+		[sections, deferredCurrentId],
 	);
 	const section =
 		current?.kind === "review_section" ? current.section ?? null : null;
@@ -619,7 +628,7 @@ export function DiffPane() {
 	useEffect(() => {
 		recordClientTelemetry("client.diff.current_section.evaluated", {
 			"acp.session_id": session?.session_id,
-			"section.current_id": currentId,
+			"section.current_id": deferredCurrentId,
 			"section.has_entry": !!current,
 			"section.has_payload": !!section,
 			"section.file_count": section?.files.length,
@@ -685,7 +694,7 @@ export function DiffPane() {
 		return () => {
 			cancelled = true;
 		};
-	}, [session, section, current, currentId]);
+	}, [session, section, current, deferredCurrentId]);
 
 	if (!session || !current) {
 		return (
@@ -764,41 +773,13 @@ export function DiffPane() {
 			ref={scrollContainerRef}
 			className="flex min-h-0 flex-col overflow-y-auto"
 		>
-			<header className="border-b border-border bg-card/40 px-6 py-4">
-				<h2 className="text-base font-semibold">{section!.title}</h2>
-				<MarkdownViewer
-					markdown={section!.intent}
-					className="mt-1 text-muted-foreground"
-				/>
-				<div className="mt-2 flex gap-3 font-mono text-[11px] text-muted-foreground">
-					<span>
-						<strong className="text-foreground/80">base:</strong>{" "}
-						{section!.base_ref}
-					</span>
-					<span>
-						<strong className="text-foreground/80">head:</strong>{" "}
-						{section!.head_ref}
-					</span>
-				</div>
-				{canRequestFeedback && (
-					<button
-						type="button"
-						onClick={requestSectionFeedback}
-						className="mt-3 inline-flex items-center gap-1.5 rounded border border-border bg-background/70 px-2.5 py-1.5 text-xs font-medium text-foreground hover:bg-accent"
-					>
-						<Sparkles className="size-3.5 text-primary" />
-						<span>Load feedback</span>
-					</button>
-				)}
+			<div className="flex flex-col gap-4 p-4">
 				{agentFocusLabel && (
-					<div className="mt-2 inline-flex items-center gap-1.5 rounded border border-primary/40 bg-primary/10 px-2 py-1 font-mono text-[11px] text-primary">
+					<div className="inline-flex w-fit items-center gap-1.5 rounded border border-primary/40 bg-primary/10 px-2 py-1 font-mono text-[11px] text-primary">
 						<LocateFixed className="size-3" />
 						{agentFocusLabel}
 					</div>
 				)}
-			</header>
-
-			<div className="flex flex-col gap-4 p-4">
 				{loading && (
 					<div className="text-sm text-muted-foreground">Loading diff…</div>
 				)}

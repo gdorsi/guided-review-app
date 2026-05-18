@@ -11,6 +11,7 @@ const TAG_SECTION_MAP: &str = "acp-section-map";
 const TAG_SECTION: &str = "acp-section";
 const TAG_COMMENT_DRAFT: &str = "acp-comment-draft";
 const TAG_COMMENT_RESULT: &str = "acp-comment-result";
+const TAG_PR_DESCRIPTION: &str = "acp-pr-description";
 
 #[derive(Debug, Deserialize)]
 struct SectionMapWire {
@@ -210,6 +211,28 @@ fn handle_block(app: &AppHandle, session_id: &str, tag: &str, body: &str, suppre
                 tracing::warn!(session_id, error = %e, body_snippet = %snippet(body), "failed to parse comment draft");
             }
         },
+        TAG_PR_DESCRIPTION => {
+            let trimmed = body.trim();
+            if trimmed.is_empty() {
+                tracing::warn!(session_id, "empty pr_description block");
+            } else {
+                let span = tracing::info_span!(
+                    "acp.pr_description",
+                    session_id,
+                    body_len = trimmed.len(),
+                );
+                let _enter = span.enter();
+                tracing::info!(session_id, body_len = trimmed.len(), "pr_description parsed");
+                let _ = app.emit(
+                    EV_PR_DESCRIPTION,
+                    PrDescriptionEvent {
+                        session_id: session_id.to_string(),
+                        body: trimmed.to_string(),
+                        telemetry_context: telemetry::current_context(),
+                    },
+                );
+            }
+        }
         TAG_COMMENT_RESULT => match parse_lenient::<CommentResult>(body) {
             Ok(result) => {
                 let span = tracing::info_span!(
@@ -265,6 +288,7 @@ fn extract_fenced_blocks(buf: &str) -> Vec<(String, String, usize)> {
             && tag_line != TAG_SECTION
             && tag_line != TAG_COMMENT_DRAFT
             && tag_line != TAG_COMMENT_RESULT
+            && tag_line != TAG_PR_DESCRIPTION
         {
             search = after_open;
             continue;

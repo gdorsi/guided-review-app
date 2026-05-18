@@ -7,6 +7,7 @@ use serde::Serialize;
 pub const EV_SECTION_MAP: &str = "acp://section-map";
 pub const EV_SECTION: &str = "acp://section";
 pub const EV_SECTION_PROGRESS: &str = "acp://section-progress";
+pub const EV_PR_DESCRIPTION: &str = "acp://pr-description";
 pub const EV_TEXT_CHUNK: &str = "acp://text-chunk";
 pub const EV_TOOL_CALL: &str = "acp://tool-call";
 pub const EV_TOOL_CALL_UPDATE: &str = "acp://tool-call-update";
@@ -29,6 +30,13 @@ pub struct SectionEvent {
     pub session_id: String,
     pub section: ReviewSection,
     pub suppress_chat: bool,
+    pub telemetry_context: TelemetryContext,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PrDescriptionEvent {
+    pub session_id: String,
+    pub body: String,
     pub telemetry_context: TelemetryContext,
 }
 

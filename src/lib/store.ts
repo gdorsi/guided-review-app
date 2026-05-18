@@ -33,7 +33,8 @@ export interface SessionInfo {
 	published_comments_error?: string;
 }
 
-const PR_DESCRIPTION_SECTION_ID = "pr-description";
+export const PR_DESCRIPTION_SECTION_ID = "pr-description";
+export const MAX_SECTION_CHAT_SESSIONS = 3;
 
 function hasSectionFeedback(section: ReviewSection): boolean {
 	return (
@@ -193,7 +194,10 @@ interface AppState {
 	sections: SectionState[];
 	currentSectionId: string | null;
 	processingSectionIds: string[];
-	chat: ChatMessage[];
+	chatBySection: Record<string, ChatMessage[]>;
+	sessionBySection: Record<string, string>;
+	sectionForSession: Record<string, string>;
+	sectionChatLru: string[];
 	commentDrafts: CommentDraftState[];
 	publishedComments: PublishedPrComment[];
 	publishedCommentsFetchedAt: number | null;
@@ -216,14 +220,22 @@ interface AppState {
 	setCurrentSection: (id: string | null, reason?: string) => void;
 	startSectionProcessing: (id: string) => void;
 	finishSectionProcessing: (id?: string | null) => void;
+	setPrDescriptionBody: (body: string) => void;
 
-	addUserMessage: (text: string) => void;
+	addUserMessage: (text: string, sectionId?: string) => void;
 	appendAssistantChunk: (text: string, meta?: AssistantChunkMeta) => void;
-	finishAssistantMessage: () => void;
-	addSectionMapItem: (entries: SectionMapEntry[]) => void;
-	addReviewSectionItem: (section: ReviewSection) => void;
-	addToolCallItem: (toolCall: ToolCallItem) => void;
-	updateToolCallItem: (id: string, status: string) => void;
+	finishAssistantMessage: (sessionId?: string) => void;
+	addSectionMapItem: (entries: SectionMapEntry[], sessionId?: string) => void;
+	addReviewSectionItem: (section: ReviewSection, sessionId?: string) => void;
+	addToolCallItem: (toolCall: ToolCallItem, sessionId?: string) => void;
+	updateToolCallItem: (id: string, status: string, sessionId?: string) => void;
+
+	attachSectionChatSession: (
+		sectionId: string,
+		sessionId: string,
+	) => { evictedSessionId: string | null };
+	detachSectionChatSession: (sectionId: string) => void;
+	touchSectionChatSession: (sectionId: string) => void;
 
 	addCommentDraft: (id: string, draft: CommentDraft) => void;
 	updateCommentDraft: (id: string, patch: Partial<CommentDraftState>) => void;
@@ -244,7 +256,19 @@ interface AppState {
 function prDescriptionFromSession(
 	session: SessionInfo | null,
 ): PrDescriptionSectionState | null {
-	if (!session?.pull_request && !session?.pull_request_error) return null;
+	if (!session) return null;
+	if (!session.pull_request && !session.pull_request_error) {
+		// Branch / SHA / local review: synthesize an empty PR description placeholder
+		// that the agent will fill via the acp-pr-description fenced block.
+		return {
+			id: PR_DESCRIPTION_SECTION_ID,
+			kind: "pr_description",
+			title: "PR description",
+			intent: "Overview",
+			status: "in_review",
+			body: "Generating description from branch commits…",
+		};
+	}
 	const pr = session.pull_request;
 	return {
 		id: PR_DESCRIPTION_SECTION_ID,
@@ -323,9 +347,9 @@ function appendStreamingText(
 }
 
 const STRUCTURED_REVIEW_BLOCK_RE =
-	/```[ \t]*(?:acp-section-map|acp-section|acp-comment-draft|acp-comment-result)[^\n]*\n[\s\S]*?\n```[ \t]*(?:\r?\n)?/g;
+	/```[ \t]*(?:acp-section-map|acp-section|acp-comment-draft|acp-comment-result|acp-pr-description)[^\n]*\n[\s\S]*?\n```[ \t]*(?:\r?\n)?/g;
 const STRUCTURED_REVIEW_BLOCK_START_RE =
-	/```[ \t]*(?:acp-section-map|acp-section|acp-comment-draft|acp-comment-result)[^\n]*\r?\n/g;
+	/```[ \t]*(?:acp-section-map|acp-section|acp-comment-draft|acp-comment-result|acp-pr-description)[^\n]*\r?\n/g;
 
 export function cleanVisibleStructuredText(text: string): string {
 	return text
@@ -445,13 +469,42 @@ function removeProcessingSectionId(ids: string[], id: string): string[] {
 	return ids.filter((current) => current !== id);
 }
 
+function resolveTargetSectionId(state: AppState, sessionId?: string): string {
+	if (sessionId) {
+		const known = state.sectionForSession[sessionId];
+		if (known) return known;
+	}
+	if (state.currentSectionId) return state.currentSectionId;
+	return PR_DESCRIPTION_SECTION_ID;
+}
+
+function updateChatForSection(
+	chatBySection: Record<string, ChatMessage[]>,
+	sectionId: string,
+	updater: (messages: ChatMessage[]) => ChatMessage[],
+): Record<string, ChatMessage[]> {
+	const current = chatBySection[sectionId] ?? [];
+	const next = updater(current);
+	if (next === current) return chatBySection;
+	return { ...chatBySection, [sectionId]: next };
+}
+
+function touchLru(lru: string[], sectionId: string): string[] {
+	const filtered = lru.filter((id) => id !== sectionId);
+	filtered.push(sectionId);
+	return filtered;
+}
+
 export const useApp = create<AppState>((set) => ({
 	project: null,
 	session: null,
 	sections: [],
 	currentSectionId: null,
 	processingSectionIds: [],
-	chat: [],
+	chatBySection: {},
+	sessionBySection: {},
+	sectionForSession: {},
+	sectionChatLru: [],
 	commentDrafts: [],
 	publishedComments: [],
 	publishedCommentsFetchedAt: null,
@@ -483,7 +536,10 @@ export const useApp = create<AppState>((set) => ({
 					sections: [],
 					currentSectionId: null,
 					processingSectionIds: [],
-					chat: [],
+					chatBySection: {},
+					sessionBySection: {},
+					sectionForSession: {},
+					sectionChatLru: [],
 					commentDrafts: [],
 					publishedComments: [],
 					publishedCommentsFetchedAt: null,
@@ -506,10 +562,20 @@ export const useApp = create<AppState>((set) => ({
 				"pull_request.has_error": !!s?.pull_request_error,
 			});
 			const prDescription = prDescriptionFromSession(s);
+			const sessionBySection: Record<string, string> = s
+				? { [PR_DESCRIPTION_SECTION_ID]: s.session_id }
+				: {};
+			const sectionForSession: Record<string, string> = s
+				? { [s.session_id]: PR_DESCRIPTION_SECTION_ID }
+				: {};
 			set({
 				session: s,
 				sections: prDescription ? [prDescription] : [],
 				currentSectionId: prDescription ? prDescription.id : null,
+				chatBySection: prDescription ? { [PR_DESCRIPTION_SECTION_ID]: [] } : {},
+				sessionBySection,
+				sectionForSession,
+				sectionChatLru: [],
 				commentDrafts: [],
 				publishedComments: s?.published_comments ?? [],
 				publishedCommentsFetchedAt: s ? Date.now() : null,
@@ -525,15 +591,17 @@ export const useApp = create<AppState>((set) => ({
 				"session.source.kind": session.source.kind,
 				"section.current_id": snapshot.current_section_id,
 				"section.count": snapshot.sections.length,
-				"chat.count": snapshot.chat.length,
-				"comment_draft.count": snapshot.comment_drafts.length,
 			});
+			const restoredSections = snapshot.sections.map(restoreSectionFeedbackLoaded);
 			set({
 				session,
-				sections: snapshot.sections.map(restoreSectionFeedbackLoaded),
+				sections: restoredSections,
 				currentSectionId: snapshot.current_section_id,
 				processingSectionIds: [],
-				chat: snapshot.chat,
+				chatBySection: { [PR_DESCRIPTION_SECTION_ID]: [] },
+				sessionBySection: { [PR_DESCRIPTION_SECTION_ID]: session.session_id },
+				sectionForSession: { [session.session_id]: PR_DESCRIPTION_SECTION_ID },
+				sectionChatLru: [],
 				commentDrafts: snapshot.comment_drafts,
 				publishedComments: snapshot.published_comments,
 				publishedCommentsFetchedAt: Date.now(),
@@ -546,18 +614,25 @@ export const useApp = create<AppState>((set) => ({
 		},
 		reset: () =>
 			set((state) => {
+				const chatCount = Object.values(state.chatBySection).reduce(
+					(acc, messages) => acc + messages.length,
+					0,
+				);
 				recordClientTelemetry("client.store.reset", {
 					"acp.session_id": state.session?.session_id,
 					"section.current_id": state.currentSectionId,
 					"section.count": state.sections.length,
-					"chat.count": state.chat.length,
+					"chat.count": chatCount,
 				});
 				return {
 					session: null,
 					sections: [],
 					currentSectionId: null,
 					processingSectionIds: [],
-					chat: [],
+					chatBySection: {},
+					sessionBySection: {},
+					sectionForSession: {},
+					sectionChatLru: [],
 					commentDrafts: [],
 					publishedComments: [],
 					publishedCommentsFetchedAt: null,
@@ -755,28 +830,43 @@ export const useApp = create<AppState>((set) => ({
 				};
 			}),
 
-	addUserMessage: (text) =>
-		set((state) => ({
-			chat: [
-				...state.chat,
-				{ id: crypto.randomUUID(), role: "user", text },
-			],
-			streaming: true,
-		})),
+		setPrDescriptionBody: (body) =>
+			set((state) => ({
+				sections: state.sections.map((s) =>
+					s.kind === "pr_description" ? { ...s, body } : s,
+				),
+			})),
+
+	addUserMessage: (text, sectionId) =>
+		set((state) => {
+			const targetId = sectionId ?? resolveTargetSectionId(state);
+			return {
+				chatBySection: updateChatForSection(
+					state.chatBySection,
+					targetId,
+					(messages) => [
+						...messages,
+						{ id: crypto.randomUUID(), role: "user", text },
+					],
+				),
+				streaming: true,
+			};
+		}),
 
 	appendAssistantChunk: (text, meta) =>
 		set((state) => {
-			const chat = [...state.chat];
-			const last = chat[chat.length - 1];
+			const targetId = resolveTargetSectionId(state, meta?.sessionId);
 			const sessionId = meta?.sessionId ?? state.session?.session_id;
 			const stripped = stripStructuredReviewBlocks(
 				text,
 				state.structuredReviewBlockOpen,
 			);
 			const visibleText = stripped.text;
+			const messages = state.chatBySection[targetId] ?? [];
+			const chat = [...messages];
+			const last = chat[chat.length - 1];
 			if (!last && !visibleText) {
 				return {
-					chat,
 					structuredReviewBlockOpen: stripped.insideBlock,
 				};
 			}
@@ -799,6 +889,7 @@ export const useApp = create<AppState>((set) => ({
 				recordClientTelemetry("client.chat.assistant_chunk.merged", {
 					"acp.session_id": sessionId,
 					"acp.message_id": meta?.messageId,
+					"section.id": targetId,
 					"chat.chunk.length": text.length,
 					"chat.current.length": last.text.length,
 					"chat.next.length": nextText.length,
@@ -816,13 +907,13 @@ export const useApp = create<AppState>((set) => ({
 			} else {
 				if (!visibleText) {
 					return {
-						chat,
 						structuredReviewBlockOpen: stripped.insideBlock,
 					};
 				}
 				recordClientTelemetry("client.chat.assistant_message.started", {
 					"acp.session_id": sessionId,
 					"acp.message_id": meta?.messageId,
+					"section.id": targetId,
 					"chat.chunk.length": text.length,
 					"chat.chunk.text": truncateTelemetryText(text),
 				});
@@ -834,48 +925,82 @@ export const useApp = create<AppState>((set) => ({
 					streaming: true,
 				});
 			}
-			return { chat, structuredReviewBlockOpen: stripped.insideBlock };
+			return {
+				chatBySection: { ...state.chatBySection, [targetId]: chat },
+				structuredReviewBlockOpen: stripped.insideBlock,
+			};
 		}),
 
-	finishAssistantMessage: () =>
+	finishAssistantMessage: (sessionId) =>
 		set((state) => {
-			const chat = [...state.chat];
-			const last = chat[chat.length - 1];
-			if (last && last.streaming) {
+			const targets = sessionId
+				? [resolveTargetSectionId(state, sessionId)]
+				: Object.keys(state.chatBySection);
+			let chatBySection = state.chatBySection;
+			for (const targetId of targets) {
+				const messages = chatBySection[targetId];
+				if (!messages || messages.length === 0) continue;
+				const last = messages[messages.length - 1];
+				if (!last.streaming) continue;
 				recordClientTelemetry("client.chat.assistant_message.finished", {
 					"acp.session_id": state.session?.session_id,
+					"section.id": targetId,
 					"chat.message.length": last.text.length,
 				});
-				chat[chat.length - 1] = { ...last, streaming: false };
+				const next = [...messages];
+				next[next.length - 1] = { ...last, streaming: false };
+				chatBySection = { ...chatBySection, [targetId]: next };
 			}
-			return { chat, streaming: false };
+			return { chatBySection, streaming: false };
 		}),
 
-	addSectionMapItem: (entries) =>
-		set((state) => ({
-			chat: [
-				...finishStreamingMessages(state.chat),
-				readableAssistantMessage({
-					type: "section_map",
-					sections: entries,
-				}),
-			],
-		})),
-
-	addReviewSectionItem: (section) =>
-		set((state) => ({
-			chat: [
-				...finishStreamingMessages(state.chat),
-				readableAssistantMessage({
-					type: "review_section",
-					section,
-				}),
-			],
-		})),
-
-	addToolCallItem: (toolCall) =>
+	addSectionMapItem: (entries, sessionId) =>
 		set((state) => {
-			const chat = [...state.chat];
+			const targetId = sessionId
+				? resolveTargetSectionId(state, sessionId)
+				: PR_DESCRIPTION_SECTION_ID;
+			return {
+				chatBySection: updateChatForSection(
+					state.chatBySection,
+					targetId,
+					(messages) => [
+						...finishStreamingMessages(messages),
+						readableAssistantMessage({
+							type: "section_map",
+							sections: entries,
+						}),
+					],
+				),
+			};
+		}),
+
+	addReviewSectionItem: (section, sessionId) =>
+		set((state) => {
+			const targetId = sessionId
+				? resolveTargetSectionId(state, sessionId)
+				: PR_DESCRIPTION_SECTION_ID;
+			return {
+				chatBySection: updateChatForSection(
+					state.chatBySection,
+					targetId,
+					(messages) => [
+						...finishStreamingMessages(messages),
+						readableAssistantMessage({
+							type: "review_section",
+							section,
+						}),
+					],
+				),
+			};
+		}),
+
+	addToolCallItem: (toolCall, sessionId) =>
+		set((state) => {
+			const targetId = sessionId
+				? resolveTargetSectionId(state, sessionId)
+				: PR_DESCRIPTION_SECTION_ID;
+			const messages = state.chatBySection[targetId] ?? [];
+			const chat = [...messages];
 			const last = chat[chat.length - 1];
 			if (last?.role === "assistant" && last.streaming && !last.item) {
 				const parts = partsFromMessage(last);
@@ -885,37 +1010,124 @@ export const useApp = create<AppState>((set) => ({
 					text: textFromParts(parts),
 					parts,
 				};
-				return { chat };
+			} else {
+				chat.push({
+					id: crypto.randomUUID(),
+					role: "assistant",
+					text: "",
+					parts: [{ type: "tool_call", toolCall }],
+					streaming: true,
+				});
 			}
 			return {
-				chat: [
-					...chat,
-					{
-						id: crypto.randomUUID(),
-						role: "assistant",
-						text: "",
-						parts: [{ type: "tool_call", toolCall }],
-						streaming: true,
-					},
-				],
+				chatBySection: { ...state.chatBySection, [targetId]: chat },
 			};
 		}),
 
-	updateToolCallItem: (id, status) =>
-		set((state) => ({
-			chat: state.chat.map((message) => {
-				if (!message.parts?.some((part) => part.type === "tool_call")) {
-					return message;
+	updateToolCallItem: (id, status, sessionId) =>
+		set((state) => {
+			let chatBySection = state.chatBySection;
+			const targets = sessionId
+				? [resolveTargetSectionId(state, sessionId)]
+				: Object.keys(state.chatBySection);
+			for (const targetId of targets) {
+				const messages = chatBySection[targetId];
+				if (!messages) continue;
+				let touched = false;
+				const next = messages.map((message) => {
+					if (!message.parts?.some((part) => part.type === "tool_call")) {
+						return message;
+					}
+					const matches = message.parts.some(
+						(part) => part.type === "tool_call" && part.toolCall.tool_call_id === id,
+					);
+					if (!matches) return message;
+					touched = true;
+					const parts = message.parts.map((part) =>
+						updateToolCallPart(part, id, status),
+					);
+					return {
+						...message,
+						parts,
+					};
+				});
+				if (touched) {
+					chatBySection = { ...chatBySection, [targetId]: next };
 				}
-				const parts = message.parts.map((part) =>
-					updateToolCallPart(part, id, status),
-				);
-				return {
-					...message,
-					parts,
-				};
-			}),
-		})),
+			}
+			return { chatBySection };
+		}),
+
+	attachSectionChatSession: (sectionId, sessionId) => {
+		let evictedSessionId: string | null = null;
+		set((state) => {
+			const previousSessionId = state.sessionBySection[sectionId];
+			const sectionForSession = { ...state.sectionForSession };
+			if (previousSessionId && previousSessionId !== sessionId) {
+				delete sectionForSession[previousSessionId];
+			}
+			sectionForSession[sessionId] = sectionId;
+			const sessionBySection = {
+				...state.sessionBySection,
+				[sectionId]: sessionId,
+			};
+			let lru =
+				sectionId === PR_DESCRIPTION_SECTION_ID
+					? state.sectionChatLru
+					: touchLru(state.sectionChatLru, sectionId);
+			if (
+				sectionId !== PR_DESCRIPTION_SECTION_ID &&
+				lru.length > MAX_SECTION_CHAT_SESSIONS
+			) {
+				const victimSectionId = lru[0];
+				lru = lru.slice(1);
+				const victimSessionId = sessionBySection[victimSectionId];
+				if (victimSessionId) {
+					evictedSessionId = victimSessionId;
+					delete sessionBySection[victimSectionId];
+					delete sectionForSession[victimSessionId];
+				}
+			}
+			recordClientTelemetry("client.store.section_chat.attached", {
+				"section.id": sectionId,
+				"acp.session_id": sessionId,
+				"section.lru": lru.join(","),
+				"section.evicted_session_id": evictedSessionId,
+			});
+			return {
+				sessionBySection,
+				sectionForSession,
+				sectionChatLru: lru,
+				chatBySection:
+					sectionId in state.chatBySection
+						? state.chatBySection
+						: { ...state.chatBySection, [sectionId]: [] },
+			};
+		});
+		return { evictedSessionId };
+	},
+	detachSectionChatSession: (sectionId) =>
+		set((state) => {
+			const sessionId = state.sessionBySection[sectionId];
+			if (!sessionId) return {};
+			const sessionBySection = { ...state.sessionBySection };
+			delete sessionBySection[sectionId];
+			const sectionForSession = { ...state.sectionForSession };
+			delete sectionForSession[sessionId];
+			return {
+				sessionBySection,
+				sectionForSession,
+				sectionChatLru: state.sectionChatLru.filter((id) => id !== sectionId),
+			};
+		}),
+	touchSectionChatSession: (sectionId) =>
+		set((state) => {
+			if (sectionId === PR_DESCRIPTION_SECTION_ID) return {};
+			if (!state.sessionBySection[sectionId]) return {};
+			return {
+				sectionChatLru: touchLru(state.sectionChatLru, sectionId),
+			};
+		}),
 
 	addCommentDraft: (id, draft) =>
 		set((state) => ({

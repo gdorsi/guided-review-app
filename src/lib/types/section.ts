@@ -67,6 +67,7 @@ export type CommentSide = "LEFT" | "RIGHT";
 export interface CommentDraft {
 	kind: CommentKind;
 	body: string;
+	title?: string;
 	file_path?: string;
 	line?: number;
 	side?: CommentSide;

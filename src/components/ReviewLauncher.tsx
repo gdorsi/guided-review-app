@@ -22,7 +22,6 @@ import {
 } from "@/lib/telemetry";
 import { formatPublishedCommentsForPrompt } from "@/lib/publishedComments";
 import {
-	buildAgentRestoreReviewPrompt,
 	reviewTargetFromSource,
 	sessionInfoFromSavedReview,
 } from "@/lib/reviewPersistence";
@@ -94,7 +93,16 @@ export function ReviewLauncher() {
 			res.published_comments,
 			res.published_comments_error,
 		);
-		const kickoff = `${skill}\n\n---\n\nThe repository for this review is at \`${res.repo.path}\` (base \`${res.repo.base_ref}\`, head \`${res.repo.head_ref}\`).\n\n${publishedCommentContext}\n\nInvestigate the diff with your built-in tools, then reply with one \`\`\`acp-section-map\`\`\` fenced block describing the planned sections. After that, stop and wait for me.`;
+		const isBranchReview =
+			!res.pull_request &&
+			(res.source.kind === "branch" ||
+				res.source.kind === "local_branch" ||
+				res.source.kind === "local" ||
+				res.source.kind === "sha");
+		const branchDescriptionInstruction = isBranchReview
+			? `\n\nThis review has no GitHub PR description. Before emitting the section map, emit one \`\`\`acp-pr-description\`\`\` fenced block whose body is a concise Markdown summary of the branch (read the commit log between base and head, then summarize the intent and the scope of changes in 1–3 short paragraphs). Do not include code excerpts.`
+			: "";
+		const kickoff = `${skill}\n\n---\n\nThe repository for this review is at \`${res.repo.path}\` (base \`${res.repo.base_ref}\`, head \`${res.repo.head_ref}\`).\n\n${publishedCommentContext}${branchDescriptionInstruction}\n\nInvestigate the diff with your built-in tools, then reply with one \`\`\`acp-section-map\`\`\` fenced block describing the planned sections. After that, stop and wait for me.`;
 		addUserMessage("(starting guided review)");
 		await acp.sendMessage(res.session_id, kickoff, {
 			origin: "review_launcher_kickoff",
@@ -103,6 +111,7 @@ export function ReviewLauncher() {
 		});
 		recordClientTelemetry("client.launcher.start.kickoff_sent", {
 			"acp.session_id": res.session_id,
+			"kickoff.branch_description_requested": isBranchReview,
 		});
 	}
 
@@ -134,18 +143,9 @@ export function ReviewLauncher() {
 		reset();
 		restoreSavedReview(restoredSession, savedReview.snapshot);
 		setInput("");
-		await acp.sendMessage(
-			res.session_id,
-			buildAgentRestoreReviewPrompt({
-				session: restoredSession,
-				savedReview,
-			}),
-			{
-				origin: "review_restore_context",
-				reason: "restore_saved_review_context",
-				suppressPreview: true,
-			},
-		);
+		// With per-section chat sessions, each section spawns a fresh agent on the
+		// user's first message and prepends its own context. The PR description
+		// session sits idle until the user types — no agent kickoff needed.
 		recordClientTelemetry("client.launcher.saved_review.restored", {
 			"acp.session_id": res.session_id,
 			"review.is_stale": savedReview.is_stale,
