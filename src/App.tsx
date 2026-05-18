@@ -18,6 +18,7 @@ import {
 	type AgentStderrEvent,
 	type ToolCallEvent,
 	type ToolCallUpdateEvent,
+	type PrDescriptionEvent,
 	type Unlisten,
 	type GhCliStatus,
 } from "@/lib/acp";
@@ -143,7 +144,6 @@ export default function App() {
 	const session = useApp((s) => s.session);
 	const sections = useApp((s) => s.sections);
 	const currentSectionId = useApp((s) => s.currentSectionId);
-	const chat = useApp((s) => s.chat);
 	const commentDrafts = useApp((s) => s.commentDrafts);
 	const publishedComments = useApp((s) => s.publishedComments);
 	const publishedCommentsError = useApp((s) => s.publishedCommentsError);
@@ -161,6 +161,7 @@ export default function App() {
 	const addReviewSectionItem = useApp((s) => s.addReviewSectionItem);
 	const addToolCallItem = useApp((s) => s.addToolCallItem);
 	const updateToolCallItem = useApp((s) => s.updateToolCallItem);
+	const setPrDescriptionBody = useApp((s) => s.setPrDescriptionBody);
 	const pushError = useApp((s) => s.pushError);
 	const addCommentDraft = useApp((s) => s.addCommentDraft);
 	const applyCommentResult = useApp((s) => s.applyCommentResult);
@@ -193,7 +194,6 @@ export default function App() {
 		const snapshot = createReviewSnapshot({
 			current_section_id: currentSectionId,
 			sections,
-			chat,
 			comment_drafts: commentDrafts,
 			published_comments: publishedComments,
 			published_comments_error: publishedCommentsError,
@@ -213,7 +213,6 @@ export default function App() {
 		session,
 		sections,
 		currentSectionId,
-		chat,
 		commentDrafts,
 		publishedComments,
 		publishedCommentsError,
@@ -298,6 +297,19 @@ export default function App() {
 			});
 			if (!next) return;
 			void startSectionTask(sess, targetFromReviewSection(next), "auto_load_next");
+		};
+
+		const handlePrDescription = (p: PrDescriptionEvent) => {
+			recordClientTelemetry("client.acp.pr_description.received", {
+				"acp.session_id": p.session_id,
+				"body.length": p.body.length,
+			});
+			const state = useApp.getState();
+			if (state.session?.pull_request) {
+				// A real PR description from GitHub already wins; ignore the agent's.
+				return;
+			}
+			setPrDescriptionBody(p.body);
 		};
 
 		const handleSectionMap = async (p: SectionMapEvent) => {
@@ -390,12 +402,15 @@ export default function App() {
 				handleReviewSection({ session_id: p.session_id, section });
 				return;
 			}
-			addToolCallItem({
-				tool_call_id: p.tool_call_id,
-				title: p.title,
-				kind: p.kind,
-				status: p.status,
-			});
+			addToolCallItem(
+				{
+					tool_call_id: p.tool_call_id,
+					title: p.title,
+					kind: p.kind,
+					status: p.status,
+				},
+				p.session_id,
+			);
 		};
 
 		(async () => {
@@ -408,7 +423,7 @@ export default function App() {
 				),
 				on<ToolCallEvent>("acp://tool-call", handleToolCall),
 				on<ToolCallUpdateEvent>("acp://tool-call-update", (p) => {
-					updateToolCallItem(p.tool_call_id, p.status);
+					updateToolCallItem(p.tool_call_id, p.status, p.session_id);
 				}),
 				on<TextChunkEvent>("acp://text-chunk", (p) => {
 					recordClientTelemetry("client.acp.text_chunk.received", {
@@ -429,8 +444,9 @@ export default function App() {
 						"acp.session_id": p.session_id,
 						"acp.stop_reason": p.stop_reason,
 					});
-					finishAssistantMessage();
+					finishAssistantMessage(p.session_id);
 				}),
+				on<PrDescriptionEvent>("acp://pr-description", handlePrDescription),
 				on<ErrorEvent>("acp://error", (p) => {
 					recordClientTelemetryError("client.acp.error.received", p.error, {
 						"acp.session_id": p.session_id,
@@ -503,6 +519,7 @@ export default function App() {
 		addReviewSectionItem,
 		addToolCallItem,
 		updateToolCallItem,
+		setPrDescriptionBody,
 			pushError,
 			addCommentDraft,
 			applyCommentResult,

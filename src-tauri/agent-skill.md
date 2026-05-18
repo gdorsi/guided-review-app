@@ -143,6 +143,7 @@ If a section has no actionable concerns, emit `"concerns": []`.
 ```json
 {
   "kind": "inline",
+  "title": "Null check missing on input",
   "body": "Concrete code question or concern. No labels like 'Inline question about X.'",
   "file_path": "src/api/handlers.rs",
   "line": 24,
@@ -151,6 +152,8 @@ If a section has no actionable concerns, emit `"concerns": []`.
 ```
 
 `kind` is `inline` or `top_level`. `side` is `LEFT` or `RIGHT` (defaults to `RIGHT` for inline). For `top_level`, omit `file_path`, `line`, `side`.
+
+`title` is a concise summary of the comment, **at most 5 words**, used as the collapsed-state header in the UI. Use plain prose, no trailing punctuation, no labels like "Inline comment:".
 
 ### ` ```acp-comment-result ` (emit after the host asks you to publish approved drafts)
 

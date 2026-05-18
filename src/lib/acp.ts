@@ -96,6 +96,15 @@ interface StartSectionTaskRequest {
 	published_comment_context: string;
 }
 
+interface StartSectionChatRequest {
+	parent_session_id: string;
+	section_id: string;
+}
+
+interface StartSectionChatResponse {
+	session_id: string;
+}
+
 interface DiffPatch {
 	file_path: string;
 	patch: string;
@@ -206,6 +215,12 @@ export interface CommentResultEvent {
 export interface AgentStderrEvent {
 	session_id: string;
 	line: string;
+	telemetry_context?: TelemetryContext;
+}
+
+export interface PrDescriptionEvent {
+	session_id: string;
+	body: string;
 	telemetry_context?: TelemetryContext;
 }
 
@@ -398,6 +413,34 @@ export const acp = {
 			throw e;
 		}
 	},
+	startSectionChat: async (req: StartSectionChatRequest) => {
+		recordClientTelemetry("client.acp.section_chat.requested", {
+			"acp.session_id": req.parent_session_id,
+			"section.id": req.section_id,
+		});
+		try {
+			const response = await invokeWithTelemetry<StartSectionChatResponse>(
+				"start_section_chat_cmd",
+				{ req },
+				{
+					"acp.session_id": req.parent_session_id,
+					"section.id": req.section_id,
+				},
+			);
+			recordClientTelemetry("client.acp.section_chat.succeeded", {
+				"acp.parent_session_id": req.parent_session_id,
+				"acp.session_id": response.session_id,
+				"section.id": req.section_id,
+			});
+			return response;
+		} catch (e) {
+			recordClientTelemetryError("client.acp.section_chat.failed", e, {
+				"acp.session_id": req.parent_session_id,
+				"section.id": req.section_id,
+			});
+			throw e;
+		}
+	},
 	startSectionTask: async (req: StartSectionTaskRequest) => {
 		recordClientTelemetry("client.acp.section_task.requested", {
 			"acp.session_id": req.parent_session_id,
@@ -458,7 +501,8 @@ export type EventName =
 	| "acp://error"
 	| "acp://comment-draft"
 	| "acp://comment-result"
-	| "acp://agent-stderr";
+	| "acp://agent-stderr"
+	| "acp://pr-description";
 
 export function on<T>(name: EventName, handler: (payload: T) => void) {
 	recordClientTelemetry("client.acp.listener.registering", {

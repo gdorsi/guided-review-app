@@ -24,10 +24,14 @@ export interface ReviewPersistenceTarget {
 export interface ReviewSnapshot {
 	current_section_id: string | null;
 	sections: SectionState[];
-	chat: ChatMessage[];
 	comment_drafts: CommentDraftState[];
 	published_comments: PublishedPrComment[];
 	published_comments_error: string | null;
+	/**
+	 * Legacy field — older records on disk include the chat transcript here.
+	 * We no longer persist chats; this is read for compatibility only.
+	 */
+	chat?: ChatMessage[];
 }
 
 export interface SavedReviewRecord {
@@ -129,7 +133,7 @@ function restoreContextPayload(args: {
 		published_comments: savedReview.snapshot.published_comments,
 		published_comments_error: savedReview.snapshot.published_comments_error,
 		comment_drafts: savedReview.snapshot.comment_drafts,
-		recent_chat: compactChat(savedReview.snapshot.chat),
+		recent_chat: compactChat(savedReview.snapshot.chat ?? []),
 	};
 }
 
@@ -197,7 +201,6 @@ export function buildUserMessageWithReviewContext(args: {
 export function createReviewSnapshot(args: {
 	current_section_id: string | null;
 	sections: SectionState[];
-	chat: ChatMessage[];
 	comment_drafts: CommentDraftState[];
 	published_comments: PublishedPrComment[];
 	published_comments_error: string | null;
@@ -205,7 +208,6 @@ export function createReviewSnapshot(args: {
 	return {
 		current_section_id: args.current_section_id,
 		sections: args.sections,
-		chat: args.chat,
 		comment_drafts: args.comment_drafts,
 		published_comments: args.published_comments,
 		published_comments_error: args.published_comments_error,

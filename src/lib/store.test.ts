@@ -67,7 +67,10 @@ async function resetReviewState() {
 		sections: [],
 		currentSectionId: null,
 		processingSectionIds: [],
-		chat: [],
+		chatBySection: {},
+		sessionBySection: {},
+		sectionForSession: {},
+		sectionChatLru: [],
 		commentDrafts: [],
 		publishedComments: [],
 		publishedCommentsFetchedAt: null,
@@ -79,6 +82,12 @@ async function resetReviewState() {
 		diffFocus: null,
 		diffFocusError: null,
 	});
+}
+
+const PR_DESCRIPTION_SECTION_ID = "pr-description";
+
+function prDescriptionChat(state: { chatBySection: Record<string, ChatMessage[]> }) {
+	return state.chatBySection[PR_DESCRIPTION_SECTION_ID] ?? [];
 }
 
 test("setSession creates and selects the PR description section when metadata is available", async () => {
@@ -630,7 +639,7 @@ test("App-style flow surfaces a chat card for a feedback-only section using the 
 		useApp.getState().addReviewSectionItem(merged.section);
 	}
 
-	const chat = useApp.getState().chat;
+	const chat = prDescriptionChat(useApp.getState());
 	const last = chat[chat.length - 1];
 	assert.equal(last?.item?.type, "review_section");
 	assert.equal(
@@ -699,9 +708,9 @@ test("App-style flow appends a fresh chat card every time feedback arrives for t
 	deliverFeedback("first finding");
 	deliverFeedback("second finding");
 
-	const cards = useApp
-		.getState()
-		.chat.filter((m: ChatMessage) => m.item?.type === "review_section");
+	const cards = prDescriptionChat(useApp.getState()).filter(
+		(m: ChatMessage) => m.item?.type === "review_section",
+	);
 	assert.equal(cards.length, 2);
 });
 
@@ -734,14 +743,14 @@ test("setProject saves and clears the last selected project path", async () => {
 test("appendAssistantChunk merges overlapping text chunks", async () => {
 	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
 
-	useApp.setState({ chat: [], streaming: false });
+	useApp.setState({ chatBySection: {}, streaming: false });
 	useApp.getState().appendAssistantChunk("This");
 	useApp
 		.getState()
 		.appendAssistantChunk("This function checks which agent providers");
 
 	assert.equal(
-		useApp.getState().chat[0]?.text,
+		prDescriptionChat(useApp.getState())[0]?.text,
 		"This function checks which agent providers",
 	);
 });
@@ -749,7 +758,7 @@ test("appendAssistantChunk merges overlapping text chunks", async () => {
 test("appendAssistantChunk keeps normal chunks while removing shared boundaries", async () => {
 	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
 
-	useApp.setState({ chat: [], streaming: false });
+	useApp.setState({ chatBySection: {}, streaming: false });
 	useApp
 		.getState()
 		.appendAssistantChunk("available for Codex, Claude Code");
@@ -758,7 +767,7 @@ test("appendAssistantChunk keeps normal chunks while removing shared boundaries"
 		.appendAssistantChunk("Claude Code, and Cursor on this machine.");
 
 	assert.equal(
-		useApp.getState().chat[0]?.text,
+		prDescriptionChat(useApp.getState())[0]?.text,
 		"available for Codex, Claude Code, and Cursor on this machine.",
 	);
 });
@@ -828,7 +837,7 @@ test("section processing tracks multiple background section tasks independently"
 test("addSectionMapItem stores readable section map details", async () => {
 	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
 
-	useApp.setState({ chat: [], streaming: false });
+	useApp.setState({ chatBySection: {}, streaming: false });
 
 	useApp.getState().addSectionMapItem([
 		{
@@ -843,16 +852,20 @@ test("addSectionMapItem stores readable section map details", async () => {
 		},
 	]);
 
-	assert.equal(useApp.getState().chat.length, 1);
-	assert.equal(useApp.getState().chat[0]?.role, "assistant");
-	assert.equal(useApp.getState().chat[0]?.item?.type, "section_map");
-	assert.equal(useApp.getState().chat[0]?.item?.sections.length, 2);
+	assert.equal(prDescriptionChat(useApp.getState()).length, 1);
+	assert.equal(prDescriptionChat(useApp.getState())[0]?.role, "assistant");
+	const mapItem = prDescriptionChat(useApp.getState())[0]?.item;
+	assert.equal(mapItem?.type, "section_map");
+	assert.equal(
+		mapItem?.type === "section_map" ? mapItem.sections.length : -1,
+		2,
+	);
 });
 
 test("addReviewSectionItem stores readable files and feedback", async () => {
 	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
 
-	useApp.setState({ chat: [], streaming: false });
+	useApp.setState({ chatBySection: {}, streaming: false });
 
 	useApp.getState().addReviewSectionItem({
 		schema_version: 1,
@@ -880,7 +893,7 @@ test("addReviewSectionItem stores readable files and feedback", async () => {
 		pause_prompt: "Questions?",
 	});
 
-	const item = useApp.getState().chat[0]?.item;
+	const item = prDescriptionChat(useApp.getState())[0]?.item;
 	assert.equal(item?.type, "review_section");
 	assert.deepEqual(item?.section.files, ["src/lib.rs", "src/main.rs"]);
 	assert.equal(item?.section.concerns[0]?.text, "Missing empty input check.");
@@ -893,7 +906,7 @@ test("addReviewSectionItem stores readable files and feedback", async () => {
 test("tool calls stay inline between assistant markdown chunks", async () => {
 	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
 
-	useApp.setState({ chat: [], streaming: false });
+	useApp.setState({ chatBySection: {}, streaming: false });
 
 	useApp.getState().appendAssistantChunk("I will check");
 	useApp.getState().addToolCallItem({
@@ -904,8 +917,8 @@ test("tool calls stay inline between assistant markdown chunks", async () => {
 	});
 	useApp.getState().appendAssistantChunk(" and explain.");
 
-	const [message] = useApp.getState().chat as ChatMessage[];
-	assert.equal(useApp.getState().chat.length, 1);
+	const [message] = prDescriptionChat(useApp.getState()) as ChatMessage[];
+	assert.equal(prDescriptionChat(useApp.getState()).length, 1);
 	assert.equal(message?.role, "assistant");
 	assert.equal(message?.text, "I will check and explain.");
 	assert.deepEqual(message?.parts, [
@@ -926,7 +939,7 @@ test("tool calls stay inline between assistant markdown chunks", async () => {
 test("replayed assistant chunks dedupe after inline tool calls", async () => {
 	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
 
-	useApp.setState({ chat: [], streaming: false });
+	useApp.setState({ chatBySection: {}, streaming: false });
 
 	useApp.getState().appendAssistantChunk("I will check");
 	useApp.getState().addToolCallItem({
@@ -937,7 +950,7 @@ test("replayed assistant chunks dedupe after inline tool calls", async () => {
 	});
 	useApp.getState().appendAssistantChunk("I will check and explain.");
 
-	const [message] = useApp.getState().chat as ChatMessage[];
+	const [message] = prDescriptionChat(useApp.getState()) as ChatMessage[];
 	assert.equal(message?.text, "I will check and explain.");
 	assert.deepEqual(message?.parts, [
 		{ type: "markdown", text: "I will check" },
@@ -957,7 +970,7 @@ test("replayed assistant chunks dedupe after inline tool calls", async () => {
 test("inline tool call statuses update inside assistant message parts", async () => {
 	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
 
-	useApp.setState({ chat: [], streaming: false });
+	useApp.setState({ chatBySection: {}, streaming: false });
 
 	useApp.getState().appendAssistantChunk("Checking");
 	useApp.getState().addToolCallItem({
@@ -968,7 +981,7 @@ test("inline tool call statuses update inside assistant message parts", async ()
 	});
 	useApp.getState().updateToolCallItem("tool-1", "completed");
 
-	const [message] = useApp.getState().chat as ChatMessage[];
+	const [message] = prDescriptionChat(useApp.getState()) as ChatMessage[];
 	assert.deepEqual(message?.parts?.[1], {
 		type: "tool_call",
 		toolCall: {
@@ -983,7 +996,7 @@ test("inline tool call statuses update inside assistant message parts", async ()
 test("appendAssistantChunk hides structured review fences from chat text", async () => {
 	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
 
-	useApp.setState({ chat: [], streaming: false });
+	useApp.setState({ chatBySection: {}, streaming: false });
 
 	useApp.getState().appendAssistantChunk(
 		[
@@ -995,13 +1008,13 @@ test("appendAssistantChunk hides structured review fences from chat text", async
 		].join("\n"),
 	);
 
-	assert.equal(useApp.getState().chat[0]?.text, "Here is the map.\nReady.");
+	assert.equal(prDescriptionChat(useApp.getState())[0]?.text, "Here is the map.\nReady.");
 });
 
 test("structured review fences split around a readable item stay hidden", async () => {
 	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
 
-	useApp.setState({ chat: [], streaming: false });
+	useApp.setState({ chatBySection: {}, streaming: false });
 
 	useApp.getState().appendAssistantChunk(
 		[
@@ -1037,7 +1050,7 @@ test("structured review fences split around a readable item stay hidden", async 
 		].join("\n"),
 	);
 
-	const chat = useApp.getState().chat as ChatMessage[];
+	const chat = prDescriptionChat(useApp.getState()) as ChatMessage[];
 	assert.equal(chat.length, 3);
 	assert.equal(chat[0]?.text.trimEnd(), "A focused bug-fix PR.");
 	assert.equal(chat[1]?.item?.type, "section_map");

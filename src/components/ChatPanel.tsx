@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useApp } from "@/lib/store";
+import {
+	PR_DESCRIPTION_SECTION_ID,
+	useApp,
+	type ReviewSectionState,
+} from "@/lib/store";
 import { acp } from "@/lib/acp";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
-import { CommentDraftCard } from "./CommentDraftCard";
-import { SeverityBadge } from "./SeverityBadge";
+import { FeedbackList } from "./Concerns";
 import { cn } from "@/lib/utils";
 import {
-	Check,
-	Copy,
 	FileText,
 	ListChecks,
 	LoaderCircle,
@@ -17,15 +18,12 @@ import {
 	Wrench,
 } from "lucide-react";
 import { recordClientTelemetry, recordClientTelemetryError } from "@/lib/telemetry";
-import {
-	prTargetFromSessionSource,
-	requestAgentPublishApprovedDrafts,
-} from "@/lib/commentPublish";
 import { createDiffFocusRange } from "@/lib/diffFocus";
 import {
 	buildUserMessageWithReviewContext,
 	createReviewSnapshot,
 } from "@/lib/reviewPersistence";
+import { buildSectionChatKickoffPrefix } from "@/lib/sectionKickoff";
 import {
 	type AssistantBlock,
 	assistantPartsToBlocks,
@@ -48,126 +46,6 @@ import type {
 	ReviewSection,
 	ToolCallItem,
 } from "@/lib/types/section";
-
-function formatConcernForCopy(concern: Concern): string {
-	const text = concern.text.trim();
-	if (!concern.file_path) return text;
-	const location = concern.line
-		? `${concern.file_path}:${concern.line}`
-		: concern.file_path;
-	return text ? `${text}\n${location}` : location;
-}
-
-function ConcernItem({
-	concern,
-	onOpenLocation,
-}: {
-	concern: Concern;
-	onOpenLocation: (concern: Concern) => void;
-}) {
-	const [copied, setCopied] = useState(false);
-	const copyTimeoutRef = useRef<number | null>(null);
-
-	useEffect(() => {
-		return () => {
-			if (copyTimeoutRef.current !== null) {
-				window.clearTimeout(copyTimeoutRef.current);
-			}
-		};
-	}, []);
-
-	const copy = useCallback(async () => {
-		const payload = formatConcernForCopy(concern);
-		try {
-			await navigator.clipboard.writeText(payload);
-			setCopied(true);
-			if (copyTimeoutRef.current !== null) {
-				window.clearTimeout(copyTimeoutRef.current);
-			}
-			copyTimeoutRef.current = window.setTimeout(() => setCopied(false), 1500);
-		} catch {
-			// Browser/WebView refused clipboard write; fall through silently.
-		}
-	}, [concern]);
-
-	const hasLocation = Boolean(concern.file_path);
-	const locationLabel = concern.file_path
-		? concern.line
-			? `${concern.file_path}:${concern.line}`
-			: concern.file_path
-		: null;
-
-	return (
-		<li className="group flex items-start gap-2 text-xs">
-			<SeverityBadge severity={concern.severity} />
-			<div className="min-w-0 flex-1">
-				<div>{concern.text}</div>
-				{locationLabel && (
-					hasLocation && concern.line ? (
-						<button
-							type="button"
-							onClick={() => onOpenLocation(concern)}
-							className="mt-0.5 truncate font-mono text-[10px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline focus:outline-hidden focus-visible:text-foreground focus-visible:underline"
-							title="Open this line in the diff"
-						>
-							{locationLabel}
-						</button>
-					) : (
-						<div className="mt-0.5 font-mono text-[10px] text-muted-foreground">
-							{locationLabel}
-						</div>
-					)
-				)}
-			</div>
-			<button
-				type="button"
-				onClick={copy}
-				className={cn(
-					"inline-flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground transition-opacity hover:bg-muted/60 hover:text-foreground focus:outline-hidden focus-visible:opacity-100 focus-visible:ring-1 focus-visible:ring-primary",
-					copied
-						? "opacity-100"
-						: "opacity-0 group-hover:opacity-100",
-				)}
-				aria-label={copied ? "Copied" : "Copy concern"}
-				title={copied ? "Copied" : "Copy concern"}
-			>
-				{copied ? (
-					<Check className="size-3 text-primary" />
-				) : (
-					<Copy className="size-3" />
-				)}
-			</button>
-		</li>
-	);
-}
-
-function FeedbackList({
-	title,
-	concerns,
-	onOpenLocation,
-}: {
-	title: string;
-	concerns: Concern[];
-	onOpenLocation: (concern: Concern) => void;
-}) {
-	if (concerns.length === 0) return null;
-	return (
-		<div className="space-y-1.5">
-			<div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-				{title}
-			</div>
-			<ul className="space-y-1.5">
-				{concerns.map((concern, index) => (
-					<ConcernItem
-						key={index}
-						concern={concern}
-						onOpenLocation={onOpenLocation}
-					/>
-				))}
-			</ul>
-		</div>
-	);
-}
 
 function ReviewSectionCard({ section }: { section: ReviewSection }) {
 	const hasFeedback = section.concerns.length > 0;
@@ -350,7 +228,7 @@ function AssistantResponseView({
 
 export function ChatPanel() {
 	const session = useApp((s) => s.session);
-	const chat = useApp((s) => s.chat);
+	const chatBySection = useApp((s) => s.chatBySection);
 	const drafts = useApp((s) => s.commentDrafts);
 	const streaming = useApp((s) => s.streaming);
 	const sections = useApp((s) => s.sections);
@@ -358,12 +236,20 @@ export function ChatPanel() {
 	const processingSectionIds = useApp((s) => s.processingSectionIds);
 	const publishedComments = useApp((s) => s.publishedComments);
 	const publishedCommentsError = useApp((s) => s.publishedCommentsError);
+	const sessionBySection = useApp((s) => s.sessionBySection);
 	const addUserMessage = useApp((s) => s.addUserMessage);
+	const attachSectionChatSession = useApp((s) => s.attachSectionChatSession);
+	const touchSectionChatSession = useApp((s) => s.touchSectionChatSession);
+	const detachSectionChatSession = useApp((s) => s.detachSectionChatSession);
 	const pushError = useApp((s) => s.pushError);
-	const updateCommentDraft = useApp((s) => s.updateCommentDraft);
+
+	const activeSectionId = currentSectionId ?? PR_DESCRIPTION_SECTION_ID;
+	const chat = chatBySection[activeSectionId] ?? [];
+	const currentSection = sections.find((s) => s.id === activeSectionId);
+	const isPrDescription = activeSectionId === PR_DESCRIPTION_SECTION_ID;
+	const hasSectionChatSession = !!sessionBySection[activeSectionId];
 
 	const [input, setInput] = useState("");
-	const [publishingComments, setPublishingComments] = useState(false);
 	const [fullPageBlocks, setFullPageBlocks] = useState<AssistantBlock[] | null>(
 		null,
 	);
@@ -394,66 +280,125 @@ export function ChatPanel() {
 		const text = input.trim();
 		if (!text) return;
 		const body = text;
-		const snapshot = createReviewSnapshot({
-			current_section_id: currentSectionId,
-			sections,
-			chat,
-			comment_drafts: drafts,
-			published_comments: publishedComments,
-			published_comments_error: publishedCommentsError,
-		});
-		const messageToAgent = buildUserMessageWithReviewContext({
-			userText: body,
-			session,
-			snapshot,
-		});
-		recordClientTelemetry("client.chat.send.requested", {
-			"acp.session_id": session.session_id,
-			"message.length": body.length,
-		});
+		const targetSectionId = activeSectionId;
+
 		setInput("");
-		addUserMessage(body);
+		addUserMessage(body, targetSectionId);
+
 		try {
-			await acp.sendMessage(session.session_id, messageToAgent, {
-				origin: "chat_panel_user_send",
-				reason: "user_reply",
-				suppressPreview: true,
-			});
-			recordClientTelemetry("client.chat.send.succeeded", {
-				"acp.session_id": session.session_id,
+			if (targetSectionId === PR_DESCRIPTION_SECTION_ID) {
+				const snapshot = createReviewSnapshot({
+					current_section_id: currentSectionId,
+					sections,
+					comment_drafts: drafts,
+					published_comments: publishedComments,
+					published_comments_error: publishedCommentsError,
+				});
+				const messageToAgent = buildUserMessageWithReviewContext({
+					userText: body,
+					session,
+					snapshot,
+				});
+				recordClientTelemetry("client.chat.send.requested", {
+					"acp.session_id": session.session_id,
+					"section.id": targetSectionId,
+					"message.length": body.length,
+				});
+				await acp.sendMessage(session.session_id, messageToAgent, {
+					origin: "chat_panel_user_send",
+					reason: "user_reply",
+					sectionId: targetSectionId,
+					suppressPreview: true,
+				});
+				recordClientTelemetry("client.chat.send.succeeded", {
+					"acp.session_id": session.session_id,
+					"section.id": targetSectionId,
+					"message.length": body.length,
+				});
+				return;
+			}
+
+			let sessionId = sessionBySection[targetSectionId];
+			let messageToAgent = body;
+			const targetSection = sections.find((s) => s.id === targetSectionId);
+			const reviewSection: ReviewSectionState | undefined =
+				targetSection?.kind === "review_section" ? targetSection : undefined;
+
+			if (!sessionId) {
+				if (!reviewSection) {
+					pushError("Cannot start a chat for an unknown section.");
+					return;
+				}
+				recordClientTelemetry("client.chat.section_session.spawning", {
+					"acp.parent_session_id": session.session_id,
+					"section.id": targetSectionId,
+				});
+				const spawned = await acp.startSectionChat({
+					parent_session_id: session.session_id,
+					section_id: targetSectionId,
+				});
+				sessionId = spawned.session_id;
+				const { evictedSessionId } = attachSectionChatSession(
+					targetSectionId,
+					sessionId,
+				);
+				if (evictedSessionId) {
+					void acp.endSession(evictedSessionId).catch((e) => {
+						recordClientTelemetryError(
+							"client.chat.section_session.evict_failed",
+							e,
+							{ "acp.session_id": evictedSessionId },
+						);
+					});
+				}
+				const kickoffPrefix = buildSectionChatKickoffPrefix({
+					session,
+					section: reviewSection,
+					publishedComments,
+					publishedCommentsError,
+				});
+				messageToAgent = `${kickoffPrefix}\n\n---\n\nUser message:\n${body}`;
+				recordClientTelemetry("client.chat.section_session.spawned", {
+					"acp.parent_session_id": session.session_id,
+					"acp.session_id": sessionId,
+					"section.id": targetSectionId,
+					"section.evicted_session_id": evictedSessionId,
+				});
+			} else {
+				touchSectionChatSession(targetSectionId);
+			}
+
+			recordClientTelemetry("client.chat.send.requested", {
+				"acp.session_id": sessionId,
+				"section.id": targetSectionId,
 				"message.length": body.length,
 			});
+
+			try {
+				await acp.sendMessage(sessionId, messageToAgent, {
+					origin: "chat_panel_user_send",
+					reason: "user_reply",
+					sectionId: targetSectionId,
+					suppressPreview: true,
+				});
+				recordClientTelemetry("client.chat.send.succeeded", {
+					"acp.session_id": sessionId,
+					"section.id": targetSectionId,
+					"message.length": body.length,
+				});
+			} catch (e) {
+				// If the send fails because the session was killed externally, drop the
+				// mapping so the next attempt re-spawns.
+				detachSectionChatSession(targetSectionId);
+				throw e;
+			}
 		} catch (e) {
 			recordClientTelemetryError("client.chat.send.failed", e, {
 				"acp.session_id": session.session_id,
+				"section.id": targetSectionId,
 				"message.length": body.length,
 			});
 			pushError(`send_message failed: ${e}`);
-		}
-	}
-
-	async function submitApprovedDrafts() {
-		if (!session || publishingComments) return;
-		const target = prTargetFromSessionSource(session.source);
-		if (!target) {
-			pushError("PR target unknown.");
-			return;
-		}
-		setPublishingComments(true);
-		try {
-			await requestAgentPublishApprovedDrafts({
-				session_id: session.session_id,
-				target,
-				head_sha: session.repo.head_sha,
-				comment_drafts: drafts,
-				updateCommentDraft,
-				sendMessage: acp.sendMessage,
-			});
-		} catch (e) {
-			const message = e instanceof Error ? e.message : String(e);
-			pushError(message || "Could not ask the agent to publish the comments.");
-		} finally {
-			setPublishingComments(false);
 		}
 	}
 
@@ -505,8 +450,16 @@ export function ChatPanel() {
 					</div>
 				</DialogContent>
 			</Dialog>
-			<div className="border-b border-border px-4 py-3 text-sm font-semibold text-muted-foreground">
-				Chat
+			<div className="flex items-center justify-between border-b border-border px-4 py-3 text-sm font-semibold text-muted-foreground">
+				<span>Chat</span>
+				{currentSection && !isPrDescription && (
+					<span
+						className="truncate text-[10px] font-normal uppercase tracking-wider text-muted-foreground/80"
+						title={currentSection.title}
+					>
+						{currentSection.title}
+					</span>
+				)}
 			</div>
 			<div
 				ref={scrollerRef}
@@ -569,25 +522,6 @@ export function ChatPanel() {
 							<span className="ml-1">agent thinking…</span>
 						</div>
 					)}
-				{drafts.length > 0 && (
-					<div className="chat-scroll-item flex flex-col gap-2 pt-2">
-						{drafts.map((d) => (
-							<CommentDraftCard key={d.id} state={d} />
-						))}
-						{drafts.some((d) => d.status === "approved") && (
-							<Button
-								size="sm"
-								onClick={submitApprovedDrafts}
-								disabled={publishingComments}
-							>
-								{publishingComments ? (
-									<LoaderCircle className="size-3.5 animate-spin" />
-								) : null}
-								Submit approved comments
-							</Button>
-						)}
-					</div>
-				)}
 				<div
 					ref={bottomAnchorRef}
 					className="chat-scroll-anchor !mt-0"
@@ -612,7 +546,11 @@ export function ChatPanel() {
 					onKeyDown={onKeyDown}
 					placeholder={
 						session
-							? "Reply to the agent…  (Enter to send · ⌘+Enter for newline)"
+							? isPrDescription
+								? "Ask about the overall PR…  (Enter to send · ⌘+Enter for newline)"
+								: hasSectionChatSession
+									? "Reply to the agent…  (Enter to send · ⌘+Enter for newline)"
+									: "Start a chat for this section…  (Enter to send · ⌘+Enter for newline)"
 							: "Start a session first"
 					}
 					disabled={!session}
