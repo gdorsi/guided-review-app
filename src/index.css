@@ -81,4 +81,26 @@
 		height: 1px;
 		overflow-anchor: auto;
 	}
+
+	.resize-handle {
+		position: relative;
+		background: var(--border);
+		transition: background-color 120ms ease;
+	}
+
+	.resize-handle--vertical {
+		width: 1px;
+		cursor: col-resize;
+	}
+
+	.resize-handle--vertical::before {
+		content: "";
+		position: absolute;
+		inset: 0 -3px;
+	}
+
+	.resize-handle:hover,
+	.resize-handle[data-resize-handle-active] {
+		background: var(--ring);
+	}
 }

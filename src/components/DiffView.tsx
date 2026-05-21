@@ -691,7 +691,7 @@ export function DiffPane() {
 		return (
 			<section
 				ref={scrollContainerRef}
-				className="flex min-h-0 flex-col items-center justify-center text-sm text-muted-foreground"
+				className="flex h-full min-h-0 min-w-0 flex-col items-center justify-center text-sm text-muted-foreground"
 			>
 				<p>Start a session to see the guided review.</p>
 			</section>
@@ -702,7 +702,7 @@ export function DiffPane() {
 		return (
 			<section
 				ref={scrollContainerRef}
-				className="flex min-h-0 flex-col overflow-y-auto"
+				className="flex h-full min-h-0 min-w-0 flex-col overflow-y-auto"
 			>
 				<header className="border-b border-border bg-card/40 px-6 py-4">
 					<h2 className="text-base font-semibold">{current.title}</h2>
@@ -738,7 +738,7 @@ export function DiffPane() {
 		return (
 			<section
 				ref={scrollContainerRef}
-				className="flex min-h-0 flex-col items-center justify-center px-8 text-sm text-muted-foreground"
+				className="flex h-full min-h-0 min-w-0 flex-col items-center justify-center px-8 text-sm text-muted-foreground"
 			>
 				<p className="font-medium text-foreground">{current.title}</p>
 				<p className="mt-1">{stripMarkdownForSummary(current.intent)}</p>
@@ -762,7 +762,7 @@ export function DiffPane() {
 	return (
 		<section
 			ref={scrollContainerRef}
-			className="flex min-h-0 flex-col overflow-y-auto"
+			className="flex h-full min-h-0 min-w-0 flex-col overflow-y-auto"
 		>
 			<header className="border-b border-border bg-card/40 px-6 py-4">
 				<h2 className="text-base font-semibold">{section!.title}</h2>
