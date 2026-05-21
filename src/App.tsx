@@ -37,6 +37,12 @@ import { ReviewLauncher } from "@/components/ReviewLauncher";
 import { SectionList } from "@/components/SectionList";
 import { DiffPane } from "@/components/DiffView";
 import { ChatPanel } from "@/components/ChatPanel";
+import {
+	Group as PanelGroup,
+	Panel,
+	Separator as PanelResizeHandle,
+	useDefaultLayout,
+} from "react-resizable-panels";
 import { Button } from "@/components/ui/button";
 import { AlertTriangle } from "lucide-react";
 import {
@@ -161,6 +167,11 @@ export default function App() {
 	const pushStderr = useApp((s) => s.pushStderr);
 	const [ghCliStatus, setGhCliStatus] = useState<GhCliStatus | null>(null);
 	const [ghCliDismissed, setGhCliDismissed] = useState(false);
+	const { defaultLayout, onLayoutChanged } = useDefaultLayout({
+		id: "guided-review.main-layout",
+		panelIds: ["sections", "diff", "chat"],
+		storage: typeof window === "undefined" ? undefined : window.localStorage,
+	});
 
 	useEffect(() => {
 		let cancelled = false;
@@ -535,15 +546,41 @@ export default function App() {
 					</span>
 				)}
 			</header>
-			<main
-				className="grid min-h-0 overflow-hidden"
-				style={{
-					gridTemplateColumns: "340px minmax(0, 1fr) 460px",
-				}}
-			>
-				<SectionList />
-				<DiffPane />
-				<ChatPanel />
+			<main className="min-h-0 overflow-hidden">
+				<PanelGroup
+					id="guided-review.main-layout"
+					orientation="horizontal"
+					defaultLayout={defaultLayout}
+					onLayoutChanged={onLayoutChanged}
+					className="flex h-full"
+				>
+					<Panel
+						id="sections"
+						defaultSize={24}
+						minSize={12}
+						className="flex min-h-0 min-w-0 flex-col"
+					>
+						<SectionList />
+					</Panel>
+					<PanelResizeHandle className="resize-handle resize-handle--vertical" />
+					<Panel
+						id="diff"
+						defaultSize={44}
+						minSize={20}
+						className="flex min-h-0 min-w-0 flex-col"
+					>
+						<DiffPane />
+					</Panel>
+					<PanelResizeHandle className="resize-handle resize-handle--vertical" />
+					<Panel
+						id="chat"
+						defaultSize={32}
+						minSize={16}
+						className="flex min-h-0 min-w-0 flex-col"
+					>
+						<ChatPanel />
+					</Panel>
+				</PanelGroup>
 			</main>
 			{errors.length > 0 && (
 				<div className="fixed bottom-4 left-1/2 z-50 flex -translate-x-1/2 items-center gap-3 rounded-md border border-destructive/40 bg-destructive/10 px-4 py-2 text-xs text-destructive shadow-lg">

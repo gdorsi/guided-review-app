@@ -481,7 +481,7 @@ export function ChatPanel() {
 	}
 
 	return (
-		<aside className="flex min-h-0 min-w-0 flex-col border-l border-border bg-card/30">
+		<aside className="flex h-full min-h-0 min-w-0 flex-col border-l border-border bg-card/30">
 			<Dialog
 				open={!!fullPageBlocks}
 				onOpenChange={(open) => {
