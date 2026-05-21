@@ -2,6 +2,7 @@ import type { PublishedPrComment } from "./acp";
 import type { Concern, ReviewSection } from "./types/section";
 import { formatPublishedCommentsForPrompt } from "./publishedComments";
 import type { ReviewSectionState, SessionInfo } from "./store";
+import { AGENT_COMMENT_PUBLISHING_INSTRUCTIONS } from "./commentPublish";
 
 function commentBelongsToSection(
 	comment: PublishedPrComment,
@@ -33,6 +34,53 @@ function formatFileList(files: string[]): string {
 		return "- No files were listed for this section.";
 	}
 	return files.map((file) => `- ${file}`).join("\n");
+}
+
+function formatDiffCommand(baseRef: string, headRef: string, files: string[]): string {
+	const fileArgs = files.length === 0 ? "" : ` -- ${files.join(" ")}`;
+	return `git diff ${baseRef}..${headRef}${fileArgs}`;
+}
+
+function formatReadCodeInstructions(args: {
+	baseRef: string;
+	headRef: string;
+	files: string[];
+}): string {
+	return [
+		"Read code with your built-in tools before answering.",
+		`Start with the section diff, for example: \`${formatDiffCommand(args.baseRef, args.headRef, args.files)}\`.`,
+		"Open the relevant files and surrounding code when needed; check callers, callees, and sibling branches before claiming an issue.",
+		"Never paste file contents, code excerpts, or diff hunks into your reply.",
+		"Reference code by `file_path:line` instead of pasting diffs.",
+	].join("\n");
+}
+
+function formatCommentProtocolInstructions(): string {
+	return [
+		"When the user asks to leave a PR comment, emit one `acp-comment-draft` fenced JSON block. The host will preview it and save approved drafts locally.",
+		"Use this shape for an inline comment:",
+		"```acp-comment-draft",
+		"{",
+		'  "kind": "inline",',
+		'  "title": "Null check missing",',
+		'  "body": "Concrete code question or concern.",',
+		'  "file_path": "src/example.ts",',
+		'  "line": 24,',
+		'  "side": "RIGHT"',
+		"}",
+		"```",
+		"For a top-level PR comment, use `\"kind\": \"top_level\"` and omit `file_path`, `line`, and `side`. Keep `title` at most 5 words.",
+		"When the host asks you to publish approved drafts:",
+		...AGENT_COMMENT_PUBLISHING_INSTRUCTIONS,
+		"Result format:",
+		"```acp-comment-result",
+		"{",
+		'  "draft_id": "draft-123",',
+		'  "status": "published",',
+		'  "url": "https://github.com/owner/repo/pull/123#discussion_r1"',
+		"}",
+		"```",
+	].join("\n");
 }
 
 export function buildSectionChatKickoffPrefix(args: {
@@ -70,9 +118,16 @@ export function buildSectionChatKickoffPrefix(args: {
 		``,
 		commentBlock,
 		``,
-		`Stay focused on this section. Read files in the repo if you need more context.`,
+		formatReadCodeInstructions({
+			baseRef: session.repo.base_ref,
+			headRef: session.repo.head_ref,
+			files,
+		}),
+		``,
+		formatCommentProtocolInstructions(),
+		``,
+		`Stay focused on this section.`,
 		`Do not emit \`acp-section-map\`, \`acp-section\`, or \`acp-pr-description\` blocks — the host owns those.`,
-		`Reference code by \`file_path:line\` instead of pasting diffs.`,
 		`Reply in plain Markdown.`,
 	].join("\n");
 }
