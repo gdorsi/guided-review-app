@@ -114,8 +114,8 @@ function releaseFlag(value) {
 
 export function releaseMetadata(env, version) {
 	return {
-		tag: env.RELEASE_TAG || `guided-review-v${version}`,
-		title: env.RELEASE_NAME || `Guided Review v${version}`,
+		tag: `guided-review-v${version}`,
+		title: `Guided Review v${version}`,
 		notes:
 			env.RELEASE_NOTES ||
 			"Signed and notarized macOS build. Download the app from the assets below.",
@@ -212,13 +212,13 @@ function run(command, args, env, options = {}) {
 }
 
 async function readAppVersion() {
-	const tauriConfig = JSON.parse(
-		await fs.readFile(path.join("src-tauri", "tauri.conf.json"), "utf8"),
+	const pkg = JSON.parse(
+		await fs.readFile("package.json", "utf8"),
 	);
-	if (!tauriConfig.version) {
+	if (!pkg.version) {
 		throw new Error("src-tauri/tauri.conf.json is missing a version field.");
-	}
-	return tauriConfig.version;
+  }
+	return pkg.version;
 }
 
 async function commandSucceeds(command, args, env) {

@@ -22,6 +22,15 @@ type SendMessage = (
 	options?: SendMessageOptions,
 ) => Promise<void>;
 
+export const AGENT_COMMENT_PUBLISHING_INSTRUCTIONS = [
+	"Publish these comments using your own GitHub tools and authentication.",
+	"Publish the drafts as one PR review if your tools support that. If they do not, publish the comments individually.",
+	"Do not ask the host app to publish them. The host is only holding the approved drafts.",
+	"Use the target PR and head SHA below. For inline comments, keep the provided file path, line, and side.",
+	"After each draft is attempted, emit exactly one `acp-comment-result` fenced JSON block for that draft.",
+	"Use `status: \"published\"` and include `url` when GitHub returns one. Use `status: \"failed\"` and include `error` if GitHub rejects it.",
+];
+
 function errorMessage(error: unknown, fallback: string): string {
 	const message = error instanceof Error ? error.message : String(error);
 	return message || fallback;
@@ -63,12 +72,7 @@ export function buildAgentPublishCommentPrompt(args: {
 	};
 
 	return [
-		"Publish these comments using your own GitHub tools and authentication.",
-		"Publish the drafts as one PR review if your tools support that. If they do not, publish the comments individually.",
-		"Do not ask the host app to publish them. The host is only holding the approved drafts.",
-		"Use the target PR and head SHA below. For inline comments, keep the provided file path, line, and side.",
-		"After each draft is attempted, emit exactly one `acp-comment-result` fenced JSON block for that draft.",
-		"Use `status: \"published\"` and include `url` when GitHub returns one. Use `status: \"failed\"` and include `error` if GitHub rejects it.",
+		...AGENT_COMMENT_PUBLISHING_INSTRUCTIONS,
 		"",
 		"Approved comment drafts:",
 		"```json",
