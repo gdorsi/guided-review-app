@@ -52,6 +52,7 @@ pub struct TextChunkEvent {
     pub session_id: String,
     pub message_id: String,
     pub text: String,
+    pub kind: String,
     pub telemetry_context: TelemetryContext,
 }
 

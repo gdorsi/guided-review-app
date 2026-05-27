@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+	parseDisplayMessagePayload,
 	parseReviewSectionPayload,
 	parseSectionMapPayload,
 	parseSectionProgressPayload,
@@ -102,3 +103,13 @@ test("parseSectionProgressPayload accepts progressive range updates", () => {
 	});
 });
 
+test("parseDisplayMessagePayload accepts visible markdown from ACP tool input", () => {
+	assert.deepEqual(parseDisplayMessagePayload({ markdown: "Looks good." }), {
+		markdown: "Looks good.",
+	});
+	assert.deepEqual(parseDisplayMessagePayload({ message: "Use this path." }), {
+		markdown: "Use this path.",
+	});
+	assert.equal(parseDisplayMessagePayload({ markdown: "" }), null);
+	assert.equal(parseDisplayMessagePayload({ markdown: "   " }), null);
+});

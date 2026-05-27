@@ -15,9 +15,9 @@ test("stripMarkdownForSummary removes markdown markers for compact section label
 	);
 });
 
-test("assistantPartsToBlocks splits markdown and tool calls into separate blocks", () => {
-	const parts: ChatMessagePart[] = [
-		{ type: "markdown", text: "I will check" },
+test("assistantPartsToBlocks groups thinking text and tool calls", () => {
+	const parts = [
+		{ type: "thinking", text: "I will check" },
 		{
 			type: "tool_call",
 			toolCall: {
@@ -27,21 +27,28 @@ test("assistantPartsToBlocks splits markdown and tool calls into separate blocks
 				status: "in_progress",
 			},
 		},
-		{ type: "markdown", text: " and explain." },
-	];
+		{ type: "thinking", text: " and explain." },
+		{ type: "assistant_response", markdown: "This section is clear." },
+	] as unknown as ChatMessagePart[];
 
 	assert.deepEqual(assistantPartsToBlocks(parts), [
-		{ type: "markdown", markdown: "I will check" },
 		{
-			type: "tool_call",
-			toolCall: {
-				tool_call_id: "tool-1",
-				title: "Search repo",
-				kind: "search",
-				status: "in_progress",
-			},
+			type: "thinking",
+			parts: [
+				{ type: "text", text: "I will check" },
+				{
+					type: "tool_call",
+					toolCall: {
+						tool_call_id: "tool-1",
+						title: "Search repo",
+						kind: "search",
+						status: "in_progress",
+					},
+				},
+				{ type: "text", text: " and explain." },
+			],
 		},
-		{ type: "markdown", markdown: "and explain." },
+		{ type: "response", markdown: "This section is clear." },
 	]);
 });
 
@@ -61,13 +68,18 @@ test("assistantPartsToBlocks drops whitespace-only markdown segments", () => {
 
 	assert.deepEqual(assistantPartsToBlocks(parts), [
 		{
-			type: "tool_call",
-			toolCall: {
-				tool_call_id: "tool-1",
-				title: "Read file",
-				kind: "read",
-				status: "completed",
-			},
+			type: "thinking",
+			parts: [
+				{
+					type: "tool_call",
+					toolCall: {
+						tool_call_id: "tool-1",
+						title: "Read file",
+						kind: "read",
+						status: "completed",
+					},
+				},
+			],
 		},
 	]);
 });
@@ -81,6 +93,6 @@ test("assistantPartsToBlocks scrubs leftover acp-section-map fences", () => {
 	];
 
 	assert.deepEqual(assistantPartsToBlocks(parts), [
-		{ type: "markdown", markdown: "Here is the map:\n\nDone." },
+		{ type: "response", markdown: "Here is the map:\n\nDone." },
 	]);
 });

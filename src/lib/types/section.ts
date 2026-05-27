@@ -93,6 +93,8 @@ export interface ToolCallItem {
 
 export type ChatMessagePart =
 	| { type: "markdown"; text: string }
+	| { type: "thinking"; text: string }
+	| { type: "assistant_response"; markdown: string }
 	| { type: "tool_call"; toolCall: ToolCallItem };
 
 export type ChatItem =

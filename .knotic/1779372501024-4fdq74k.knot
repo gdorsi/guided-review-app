@@ -1,0 +1,14 @@
+{
+  "version": 3,
+  "chatId": "1779372501024-4fdq74k",
+  "createdAt": "2026-05-21T14:08:21.042Z",
+  "updatedAt": "2026-05-21T14:08:28.318Z",
+  "entries": [
+    {
+      "type": "user_message",
+      "agent": "user",
+      "content": "Are u up?",
+      "timestamp": "2026-05-21T14:08:28.318Z"
+    }
+  ]
+}

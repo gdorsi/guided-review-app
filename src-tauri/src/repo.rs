@@ -40,6 +40,7 @@ pub struct PullRequestMetadata {
     pub title: String,
     pub body: String,
     pub url: String,
+    pub base_ref_name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -68,6 +69,8 @@ struct GhPullRequestMetadata {
     title: String,
     body: Option<String>,
     url: String,
+    #[serde(rename = "baseRefName", default)]
+    base_ref_name: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -170,7 +173,11 @@ pub async fn resolve_source(source: &SessionSource) -> Result<ClonedRepo> {
             clone_or_fetch(repo_url, &RefSpec::Sha(sha.clone())).await
         }
         SessionSource::Local { path } => prepare_local(path).await,
-        SessionSource::LocalPr { path, number, .. } => prepare_local_pr(path, *number).await,
+        SessionSource::LocalPr {
+            path,
+            repo_url,
+            number,
+        } => prepare_local_pr(path, repo_url, *number).await,
         SessionSource::LocalBranch { path, branch } => prepare_local_branch(path, branch).await,
     }
 }
@@ -216,7 +223,7 @@ async fn prepare_local(path: &Path) -> Result<ClonedRepo> {
     })
 }
 
-async fn prepare_local_pr(path: &Path, number: u64) -> Result<ClonedRepo> {
+async fn prepare_local_pr(path: &Path, repo_url: &str, number: u64) -> Result<ClonedRepo> {
     if !path.is_dir() {
         return Err(anyhow!("not a directory: {}", path.display()));
     }
@@ -226,7 +233,7 @@ async fn prepare_local_pr(path: &Path, number: u64) -> Result<ClonedRepo> {
     let pr_refspec = format!("+refs/pull/{number}/head:{head_ref}");
     run_git(Some(path), &["fetch", "origin", &pr_refspec]).await?;
     let head_sha = resolve_commit_sha(path, &head_ref).await?;
-    let base_ref = resolve_local_base_ref(path, &head_ref).await?;
+    let base_ref = resolve_pull_request_base_ref(path, repo_url, number, &head_ref).await?;
 
     Ok(ClonedRepo {
         path: path.to_path_buf(),
@@ -245,7 +252,10 @@ async fn prepare_local_branch(path: &Path, branch: &str) -> Result<ClonedRepo> {
     let _ = run_git(Some(path), &["fetch", "--all", "--prune"]).await;
     let head_ref = resolve_local_branch_ref(path, branch).await?;
     let head_sha = resolve_commit_sha(path, &head_ref).await?;
-    let base_ref = resolve_local_base_ref(path, &head_ref).await?;
+    let base_ref = match inspect_origin(path).await {
+        Ok(origin) => resolve_branch_base_ref(path, &origin.repo_url, branch, &head_ref).await?,
+        Err(_) => resolve_local_base_ref(path, &head_ref).await?,
+    };
 
     Ok(ClonedRepo {
         path: path.to_path_buf(),
@@ -302,6 +312,69 @@ async fn resolve_local_base_ref(path: &Path, head_ref: &str) -> Result<String> {
     Ok(merge_base)
 }
 
+async fn resolve_pull_request_base_ref(
+    path: &Path,
+    repo_url: &str,
+    number: u64,
+    head_ref: &str,
+) -> Result<String> {
+    let Ok(metadata) = fetch_pull_request_metadata(repo_url, number).await else {
+        return resolve_local_base_ref(path, head_ref).await;
+    };
+    if let Some(base_ref) =
+        resolve_pull_request_target_base_ref(path, head_ref, &metadata.base_ref_name).await?
+    {
+        return Ok(base_ref);
+    }
+
+    resolve_local_base_ref(path, head_ref).await
+}
+
+async fn resolve_branch_base_ref(
+    path: &Path,
+    repo_url: &str,
+    branch: &str,
+    head_ref: &str,
+) -> Result<String> {
+    let lookup_branch = branch_pr_lookup_name(branch);
+    let Ok(metadata) = fetch_pull_request_metadata_for_branch(repo_url, lookup_branch).await else {
+        return resolve_local_base_ref(path, head_ref).await;
+    };
+    if let Some(base_ref) =
+        resolve_pull_request_target_base_ref(path, head_ref, &metadata.base_ref_name).await?
+    {
+        return Ok(base_ref);
+    }
+
+    resolve_local_base_ref(path, head_ref).await
+}
+
+async fn resolve_pull_request_target_base_ref(
+    path: &Path,
+    head_ref: &str,
+    base_branch: &str,
+) -> Result<Option<String>> {
+    let base_branch = base_branch.trim();
+    if base_branch.is_empty() {
+        return Ok(None);
+    }
+    let remote_ref = format!("origin/{base_branch}");
+    let refspec = format!("+refs/heads/{base_branch}:refs/remotes/{remote_ref}");
+    let _ = run_git(Some(path), &["fetch", "origin", &refspec]).await;
+    let merge_base = run_git_output(Some(path), &["merge-base", head_ref, &remote_ref])
+        .await
+        .map(|s| s.trim().to_string())
+        .unwrap_or(remote_ref);
+    Ok(Some(merge_base))
+}
+
+fn branch_pr_lookup_name(branch: &str) -> &str {
+    branch
+        .trim()
+        .strip_prefix("origin/")
+        .unwrap_or(branch.trim())
+}
+
 pub async fn clone_or_fetch(url: &str, refspec: &RefSpec) -> Result<ClonedRepo> {
     let slug = slug_from_url(url)?;
     let path = repos_dir()?.join(&slug);
@@ -315,8 +388,9 @@ pub async fn clone_or_fetch(url: &str, refspec: &RefSpec) -> Result<ClonedRepo> 
     let (base_ref, head_ref) = match refspec {
         RefSpec::Branch(name) => {
             run_git(Some(&path), &["fetch", "origin", name]).await?;
-            let base = resolve_default_branch(&path).await?;
-            (base, format!("origin/{name}"))
+            let head = format!("origin/{name}");
+            let base = resolve_branch_base_ref(&path, url, name, &head).await?;
+            (base, head)
         }
         RefSpec::PullRequest(n) => {
             let head_local = format!("pr-{n}");
@@ -329,7 +403,7 @@ pub async fn clone_or_fetch(url: &str, refspec: &RefSpec) -> Result<ClonedRepo> 
                 ],
             )
             .await?;
-            let base = resolve_default_branch(&path).await?;
+            let base = resolve_pull_request_base_ref(&path, url, *n, &head_local).await?;
             (base, head_local)
         }
         RefSpec::Sha(sha) => {
@@ -422,14 +496,22 @@ pub fn parse_github_repo_url(remote: &str) -> Option<GithubRepoInfo> {
 }
 
 pub fn gh_pr_view_args(owner: &str, repo: &str, number: u64) -> Vec<String> {
+    gh_pr_view_target_args(owner, repo, number.to_string())
+}
+
+pub fn gh_pr_view_branch_args(owner: &str, repo: &str, branch: &str) -> Vec<String> {
+    gh_pr_view_target_args(owner, repo, branch.to_string())
+}
+
+fn gh_pr_view_target_args(owner: &str, repo: &str, target: String) -> Vec<String> {
     vec![
         "pr".to_string(),
         "view".to_string(),
-        number.to_string(),
+        target,
         "--repo".to_string(),
         format!("{owner}/{repo}"),
         "--json".to_string(),
-        "title,body,url".to_string(),
+        "title,body,url,baseRefName".to_string(),
     ]
 }
 
@@ -457,6 +539,7 @@ pub fn parse_pull_request_metadata_json(raw: &str) -> Result<PullRequestMetadata
         title: gh.title,
         body: gh.body.unwrap_or_default(),
         url: gh.url,
+        base_ref_name: gh.base_ref_name,
     })
 }
 
@@ -528,6 +611,17 @@ pub async fn fetch_pull_request_metadata(
     let repo = parse_github_repo_url(repo_url)
         .ok_or_else(|| anyhow!("PR metadata requires a GitHub repository URL"))?;
     let args = gh_pr_view_args(&repo.owner, &repo.repo, number);
+    let raw = gh::output(&args).await?;
+    parse_pull_request_metadata_json(&raw)
+}
+
+pub async fn fetch_pull_request_metadata_for_branch(
+    repo_url: &str,
+    branch: &str,
+) -> Result<PullRequestMetadata> {
+    let repo = parse_github_repo_url(repo_url)
+        .ok_or_else(|| anyhow!("PR metadata requires a GitHub repository URL"))?;
+    let args = gh_pr_view_branch_args(&repo.owner, &repo.repo, branch);
     let raw = gh::output(&args).await?;
     parse_pull_request_metadata_json(&raw)
 }
@@ -967,7 +1061,8 @@ mod tests {
             r###"{
                 "title": "Improve guided review",
                 "body": "## Summary\nMake review easier.",
-                "url": "https://github.com/openai/codex/pull/123"
+                "url": "https://github.com/openai/codex/pull/123",
+                "baseRefName": "release/2026-05"
             }"###,
         )
         .unwrap();
@@ -975,6 +1070,7 @@ mod tests {
         assert_eq!(metadata.title, "Improve guided review");
         assert_eq!(metadata.body, "## Summary\nMake review easier.");
         assert_eq!(metadata.url, "https://github.com/openai/codex/pull/123");
+        assert_eq!(metadata.base_ref_name, "release/2026-05");
     }
 
     #[test]
@@ -988,7 +1084,23 @@ mod tests {
                 "--repo",
                 "openai/codex",
                 "--json",
-                "title,body,url",
+                "title,body,url,baseRefName",
+            ]
+        );
+    }
+
+    #[test]
+    fn gh_pr_view_branch_args_target_the_expected_repo_and_fields() {
+        assert_eq!(
+            gh_pr_view_branch_args("openai", "codex", "feature/review-target"),
+            vec![
+                "pr",
+                "view",
+                "feature/review-target",
+                "--repo",
+                "openai/codex",
+                "--json",
+                "title,body,url,baseRefName",
             ]
         );
     }
@@ -1143,10 +1255,72 @@ mod tests {
             &["config", "user.email", "guided-review-test@example.com"],
         );
 
-        let prepared = prepare_local_pr(&local_path, 391).await.unwrap();
+        let prepared = prepare_local_pr(
+            &local_path,
+            "https://github.com/guided-review/test-repo",
+            391,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(prepared.head_ref, "guided-review-pr-391");
         assert_eq!(prepared.head_sha, pr_sha);
+
+        fs::remove_dir_all(&remote_path).unwrap();
+        fs::remove_dir_all(&local_path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn resolve_pull_request_target_base_ref_uses_pr_target_branch() {
+        let remote_path = temp_repo_path("pr-target-base-remote");
+        let local_path = temp_repo_path("pr-target-base-local");
+        fs::create_dir_all(&remote_path).unwrap();
+
+        run_git_sync(&remote_path, &["init", "-b", "main"]);
+        run_git_sync(&remote_path, &["config", "user.name", "Guided Review Test"]);
+        run_git_sync(
+            &remote_path,
+            &["config", "user.email", "guided-review-test@example.com"],
+        );
+        write_and_commit(&remote_path, "README.md", "main\n", "main base");
+        let main_sha = git_output_sync(&remote_path, &["rev-parse", "main"]);
+
+        run_git_sync(&remote_path, &["checkout", "-b", "release/2026-05"]);
+        write_and_commit(&remote_path, "README.md", "release\n", "release base");
+        let release_sha = git_output_sync(&remote_path, &["rev-parse", "release/2026-05"]);
+
+        run_git_sync(&remote_path, &["checkout", "-b", "feature"]);
+        write_and_commit(&remote_path, "README.md", "feature\n", "feature change");
+        run_git_sync(&remote_path, &["checkout", "main"]);
+
+        run_git_sync(
+            Path::new("."),
+            &[
+                "clone",
+                &remote_path.to_string_lossy(),
+                &local_path.to_string_lossy(),
+            ],
+        );
+        run_git_sync(
+            &local_path,
+            &[
+                "fetch",
+                "origin",
+                "+refs/heads/feature:guided-review-pr-391",
+            ],
+        );
+
+        let base_ref = resolve_pull_request_target_base_ref(
+            &local_path,
+            "guided-review-pr-391",
+            "release/2026-05",
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(base_ref, release_sha);
+        assert_ne!(base_ref, main_sha);
 
         fs::remove_dir_all(&remote_path).unwrap();
         fs::remove_dir_all(&local_path).unwrap();

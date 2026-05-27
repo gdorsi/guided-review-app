@@ -42,6 +42,8 @@ export interface SavedReviewRecord {
 	base_ref: string;
 	head_ref: string;
 	head_sha: string;
+	pr_title?: string | null;
+	pr_url?: string | null;
 	snapshot: ReviewSnapshot;
 	created_at: number;
 	updated_at: number;
@@ -53,6 +55,8 @@ export interface SaveReviewStateRequest {
 	base_ref: string;
 	head_ref: string;
 	head_sha: string;
+	pr_title?: string | null;
+	pr_url?: string | null;
 	snapshot: ReviewSnapshot;
 }
 
@@ -124,6 +128,8 @@ function restoreContextPayload(args: {
 			base_ref: savedReview.base_ref,
 			head_ref: savedReview.head_ref,
 			head_sha: savedReview.head_sha,
+			pr_title: savedReview.pr_title ?? null,
+			pr_url: savedReview.pr_url ?? null,
 			is_stale: savedReview.is_stale,
 			updated_at: savedReview.updated_at,
 		},
@@ -225,7 +231,21 @@ export function saveReviewRequestFromSession(args: {
 		base_ref: args.session.repo.base_ref,
 		head_ref: args.session.repo.head_ref,
 		head_sha: args.session.repo.head_sha,
+		pr_title: args.session.pull_request?.title ?? null,
+		pr_url: args.session.pull_request?.url ?? null,
 		snapshot: args.snapshot,
+	};
+}
+
+export function historySourceFromSavedReview(args: {
+	savedReview: Pick<SavedReviewRecord, "repo_url" | "number">;
+	projectPath: string;
+}): SessionSource {
+	return {
+		kind: "local_pr",
+		path: args.projectPath,
+		repo_url: args.savedReview.repo_url,
+		number: args.savedReview.number,
 	};
 }
 
@@ -246,5 +266,6 @@ export function sessionInfoFromSavedReview(args: {
 		published_comments: args.savedReview.snapshot.published_comments,
 		published_comments_error:
 			args.savedReview.snapshot.published_comments_error ?? undefined,
+		saved_review_is_stale: args.savedReview.is_stale,
 	};
 }

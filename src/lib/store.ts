@@ -31,6 +31,7 @@ export interface SessionInfo {
 	pull_request_error?: string;
 	published_comments?: PublishedPrComment[];
 	published_comments_error?: string;
+	saved_review_is_stale?: boolean;
 }
 
 export const PR_DESCRIPTION_SECTION_ID = "pr-description";
@@ -186,6 +187,8 @@ export interface CommentDraftState {
 interface AssistantChunkMeta {
 	sessionId?: string;
 	messageId?: string;
+	replaceStreaming?: boolean;
+	kind?: "thinking" | "response";
 }
 
 interface AppState {
@@ -258,28 +261,25 @@ function prDescriptionFromSession(
 ): PrDescriptionSectionState | null {
 	if (!session) return null;
 	if (!session.pull_request && !session.pull_request_error) {
-		// Branch / SHA / local review: synthesize an empty PR description placeholder
-		// that the agent will fill via the acp-pr-description fenced block.
 		return {
 			id: PR_DESCRIPTION_SECTION_ID,
 			kind: "pr_description",
 			title: "PR description",
 			intent: "Overview",
 			status: "in_review",
-			body: "Generating description from branch commits…",
+			body: "Generating description from branch commits...",
 		};
 	}
-	const pr = session.pull_request;
 	return {
 		id: PR_DESCRIPTION_SECTION_ID,
 		kind: "pr_description",
 		title: "PR description",
-		intent: pr?.title || "PR description unavailable",
+		intent: session.pull_request?.title || "PR description unavailable",
 		status: "in_review",
-		body: pr
-			? pr.body.trim() || "No PR description was provided."
-			: "PR description unavailable.",
-		url: pr?.url,
+		body:
+			session.pull_request?.body.trim() ||
+			"No PR description was provided for this review.",
+		url: session.pull_request?.url,
 		error: session.pull_request_error,
 	};
 }
@@ -347,9 +347,9 @@ function appendStreamingText(
 }
 
 const STRUCTURED_REVIEW_BLOCK_RE =
-	/```[ \t]*(?:acp-section-map|acp-section|acp-comment-draft|acp-comment-result|acp-pr-description)[^\n]*\n[\s\S]*?\n```[ \t]*(?:\r?\n)?/g;
+	/```[ \t]*(?:acp-pr-description|acp-section-map|acp-section|acp-comment-draft|acp-comment-result)[^\n]*\n[\s\S]*?\n```[ \t]*(?:\r?\n)?/g;
 const STRUCTURED_REVIEW_BLOCK_START_RE =
-	/```[ \t]*(?:acp-section-map|acp-section|acp-comment-draft|acp-comment-result|acp-pr-description)[^\n]*\r?\n/g;
+	/```[ \t]*(?:acp-pr-description|acp-section-map|acp-section|acp-comment-draft|acp-comment-result)[^\n]*\r?\n/g;
 
 export function cleanVisibleStructuredText(text: string): string {
 	return text
@@ -428,11 +428,63 @@ function partsFromMessage(message: ChatMessage): ChatMessagePart[] {
 
 function textFromParts(parts: ChatMessagePart[]): string {
 	return parts
-		.filter((part): part is Extract<ChatMessagePart, { type: "markdown" }> =>
-			part.type === "markdown"
-		)
-		.map((part) => part.text)
+		.map((part) => {
+			if (part.type === "markdown" || part.type === "thinking") {
+				return part.text;
+			}
+			if (part.type === "assistant_response") {
+				return part.markdown;
+			}
+			return "";
+		})
 		.join("");
+}
+
+function visibleResponseTextFromParts(parts: ChatMessagePart[]): string {
+	return parts
+		.map((part) => {
+			if (part.type === "assistant_response") return part.markdown;
+			if (part.type === "markdown") return part.text;
+			return "";
+		})
+		.join("");
+}
+
+function preserveThinkingParts(parts: ChatMessagePart[]): ChatMessagePart[] {
+	return parts
+		.map((part): ChatMessagePart | null => {
+			if (part.type === "assistant_response") return null;
+			if (part.type === "markdown") {
+				return { type: "thinking", text: part.text };
+			}
+			return part;
+		})
+		.filter((part): part is ChatMessagePart => part !== null);
+}
+
+function appendResponsePart(
+	parts: ChatMessagePart[],
+	markdown: string,
+): ChatMessagePart[] {
+	const next: ChatMessagePart[] = parts.filter(
+		(part) => part.type !== "assistant_response",
+	);
+	if (markdown) next.push({ type: "assistant_response", markdown });
+	return next;
+}
+
+function appendResponseChunkToParts(
+	parts: ChatMessagePart[],
+	chunk: string,
+): { parts: ChatMessagePart[]; text: string; merged: AppendStreamingTextResult } {
+	const current = visibleResponseTextFromParts(parts);
+	const merged = appendStreamingText(current, chunk);
+	const text = cleanVisibleStructuredText(merged.text);
+	return {
+		parts: appendResponsePart(preserveThinkingParts(parts), text),
+		text,
+		merged,
+	};
 }
 
 function updateToolCallPart(
@@ -596,7 +648,10 @@ export const useApp = create<AppState>((set) => ({
 			set({
 				session,
 				sections: restoredSections,
-				currentSectionId: snapshot.current_section_id,
+				currentSectionId:
+					snapshot.current_section_id === "spec"
+						? PR_DESCRIPTION_SECTION_ID
+						: snapshot.current_section_id,
 				processingSectionIds: [],
 				chatBySection: { [PR_DESCRIPTION_SECTION_ID]: [] },
 				sessionBySection: { [PR_DESCRIPTION_SECTION_ID]: session.session_id },
@@ -871,20 +926,75 @@ export const useApp = create<AppState>((set) => ({
 				};
 			}
 			if (last && last.role === "assistant" && last.streaming) {
+				if (meta?.replaceStreaming) {
+					const parts = appendResponsePart(
+						preserveThinkingParts(partsFromMessage(last)),
+						visibleText,
+					);
+					const responseText = visibleResponseTextFromParts(parts);
+					recordClientTelemetry("client.chat.assistant_chunk.replaced", {
+						"acp.session_id": sessionId,
+						"acp.message_id": meta?.messageId,
+						"section.id": targetId,
+						"chat.chunk.length": text.length,
+						"chat.previous.length": last.text.length,
+					});
+					chat[chat.length - 1] = {
+						...last,
+						text: responseText,
+						parts: parts.length > 0 ? parts : undefined,
+					};
+					return {
+						chatBySection: { ...state.chatBySection, [targetId]: chat },
+						structuredReviewBlockOpen: stripped.insideBlock,
+					};
+				}
 				const parts = partsFromMessage(last);
+				if (meta?.kind === "response") {
+					if (!visibleText) {
+						return {
+							structuredReviewBlockOpen: stripped.insideBlock,
+						};
+					}
+					const response = appendResponseChunkToParts(parts, visibleText);
+					recordClientTelemetry("client.chat.assistant_chunk.merged", {
+						"acp.session_id": sessionId,
+						"acp.message_id": meta?.messageId,
+						"section.id": targetId,
+						"chat.chunk.length": text.length,
+						"chat.current.length": visibleResponseTextFromParts(parts).length,
+						"chat.next.length": response.text.length,
+						"chat.overlap.raw_length": response.merged.rawOverlapLength,
+						"chat.overlap.applied_length": response.merged.appliedOverlapLength,
+						"chat.overlap.replaces_current": response.merged.replacesCurrent,
+						"chat.chunk.text": truncateTelemetryText(text),
+						"chat.current.tail": truncateTelemetryText(
+							visibleResponseTextFromParts(parts).slice(-512),
+						),
+					});
+					chat[chat.length - 1] = {
+						...last,
+						text: response.text,
+						parts: response.parts,
+					};
+					return {
+						chatBySection: { ...state.chatBySection, [targetId]: chat },
+						structuredReviewBlockOpen: stripped.insideBlock,
+					};
+				}
 				const lastPart = parts[parts.length - 1];
 				const merged = appendStreamingText(last.text, visibleText);
 				const nextText = cleanVisibleStructuredText(merged.text);
 				const nextSuffix = nextText.startsWith(last.text)
 					? nextText.slice(last.text.length)
 					: visibleText;
-				if (lastPart?.type === "markdown" && nextSuffix) {
+				if (lastPart?.type === "thinking" && nextSuffix) {
 					parts[parts.length - 1] = {
-						type: "markdown",
+						type: "thinking",
 						text: cleanVisibleStructuredText(lastPart.text + nextSuffix),
 					};
 				} else if (nextSuffix) {
-					parts.push({ type: "markdown", text: nextSuffix });
+					parts.push({ type: "thinking", text: nextSuffix });
 				}
 				recordClientTelemetry("client.chat.assistant_chunk.merged", {
 					"acp.session_id": sessionId,
@@ -917,11 +1027,15 @@ export const useApp = create<AppState>((set) => ({
 					"chat.chunk.length": text.length,
 					"chat.chunk.text": truncateTelemetryText(text),
 				});
+				const parts: ChatMessagePart[] =
+					meta?.replaceStreaming || meta?.kind === "response"
+						? [{ type: "assistant_response", markdown: visibleText }]
+						: [{ type: "thinking", text: visibleText }];
 				chat.push({
 					id: crypto.randomUUID(),
 					role: "assistant",
 					text: visibleText,
-					parts: [{ type: "markdown", text: visibleText }],
+					parts,
 					streaming: true,
 				});
 			}

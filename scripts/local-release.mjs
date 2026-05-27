@@ -114,8 +114,8 @@ function releaseFlag(value) {
 
 export function releaseMetadata(env, version) {
 	return {
-		tag: `guided-review-v${version}`,
-		title: `Guided Review v${version}`,
+		tag: env.RELEASE_TAG || `guided-review-v${version}`,
+		title: env.RELEASE_NAME || `Guided Review v${version}`,
 		notes:
 			env.RELEASE_NOTES ||
 			"Signed and notarized macOS build. Download the app from the assets below.",

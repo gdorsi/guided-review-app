@@ -1,9 +1,13 @@
 import type { ChatMessagePart, ToolCallItem } from "./types/section";
 import { cleanVisibleStructuredText } from "./store";
 
-export type AssistantBlock =
-	| { type: "markdown"; markdown: string }
+export type ThinkingBlockPart =
+	| { type: "text"; text: string }
 	| { type: "tool_call"; toolCall: ToolCallItem };
+
+export type AssistantBlock =
+	| { type: "response"; markdown: string }
+	| { type: "thinking"; parts: ThinkingBlockPart[] };
 
 export function stripMarkdownForSummary(markdown: string): string {
 	return markdown
@@ -26,25 +30,43 @@ export function assistantPartsToBlocks(
 	parts: ChatMessagePart[],
 ): AssistantBlock[] {
 	const blocks: AssistantBlock[] = [];
-	let buffer = "";
+	let responseBuffer = "";
+	let thinkingParts: ThinkingBlockPart[] = [];
 
-	const flushMarkdown = () => {
-		if (!buffer) return;
-		const cleaned = cleanVisibleStructuredText(buffer).trim();
-		buffer = "";
+	const flushThinking = () => {
+		if (thinkingParts.length === 0) return;
+		blocks.push({ type: "thinking", parts: thinkingParts });
+		thinkingParts = [];
+	};
+
+	const flushResponse = () => {
+		if (!responseBuffer) return;
+		const cleaned = cleanVisibleStructuredText(responseBuffer).trim();
+		responseBuffer = "";
 		if (!cleaned) return;
-		blocks.push({ type: "markdown", markdown: cleaned });
+		blocks.push({ type: "response", markdown: cleaned });
 	};
 
 	for (const part of parts) {
-		if (part.type === "markdown") {
-			buffer += part.text;
+		if (part.type === "thinking") {
+			flushResponse();
+			const cleaned = cleanVisibleStructuredText(part.text);
+			if (cleaned.trim()) {
+				thinkingParts.push({ type: "text", text: cleaned });
+			}
 			continue;
 		}
-		flushMarkdown();
-		blocks.push({ type: "tool_call", toolCall: part.toolCall });
+		if (part.type === "tool_call") {
+			flushResponse();
+			thinkingParts.push({ type: "tool_call", toolCall: part.toolCall });
+			continue;
+		}
+		flushThinking();
+		responseBuffer +=
+			part.type === "assistant_response" ? part.markdown : part.text;
 	}
-	flushMarkdown();
+	flushThinking();
+	flushResponse();
 
 	return blocks;
 }

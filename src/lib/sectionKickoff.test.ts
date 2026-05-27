@@ -67,3 +67,29 @@ test("buildSectionChatKickoffPrefix includes read-code and comment protocol inst
 	assert.match(prompt, /When the host asks you to publish approved drafts/);
 	assert.match(prompt, /```acp-comment-result/);
 });
+
+test("buildSectionChatKickoffPrefix tells the agent to show visible replies through the display tool", () => {
+	const prompt = buildSectionChatKickoffPrefix({
+		session,
+		section,
+		publishedComments: [],
+		publishedCommentsError: null,
+	});
+
+	assert.match(prompt, /guided_review_show_message/);
+	assert.match(prompt, /Do not write user-visible Markdown directly/);
+	assert.doesNotMatch(prompt, /Reply in plain Markdown/);
+});
+
+test("buildSectionChatKickoffPrefix does not include forked main chat context", () => {
+	const prompt = buildSectionChatKickoffPrefix({
+		session,
+		section,
+		publishedComments: [],
+		publishedCommentsError: null,
+	});
+
+	assert.doesNotMatch(prompt, /forked from the main guided review chat/);
+	assert.doesNotMatch(prompt, /Review state at fork time:/);
+	assert.doesNotMatch(prompt, /Main chat context at fork time:/);
+});

@@ -24,6 +24,10 @@ pub struct SaveReviewState {
     pub base_ref: String,
     pub head_ref: String,
     pub head_sha: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_url: Option<String>,
     pub snapshot: Value,
 }
 
@@ -37,6 +41,10 @@ pub struct SavedReviewRecord {
     pub base_ref: String,
     pub head_ref: String,
     pub head_sha: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_url: Option<String>,
     pub snapshot: Value,
     pub created_at: i64,
     pub updated_at: i64,
@@ -87,6 +95,8 @@ impl ReviewPersistence {
                 base_ref TEXT NOT NULL,
                 head_ref TEXT NOT NULL,
                 head_sha TEXT NOT NULL,
+                pr_title TEXT,
+                pr_url TEXT,
                 snapshot_json TEXT NOT NULL,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL
@@ -95,6 +105,34 @@ impl ReviewPersistence {
             CREATE INDEX IF NOT EXISTS idx_review_states_pr
                 ON review_states (repo_url, pr_number);
             "#,
+        )
+        .await?;
+        self.add_column_if_missing("review_states", "pr_title", "TEXT")
+            .await?;
+        self.add_column_if_missing("review_states", "pr_url", "TEXT")
+            .await?;
+        Ok(())
+    }
+
+    async fn add_column_if_missing(
+        &self,
+        table: &str,
+        column: &str,
+        definition: &str,
+    ) -> Result<()> {
+        let conn = self.db.connect()?;
+        let mut rows = conn
+            .query(&format!("PRAGMA table_info({table})"), ())
+            .await?;
+        while let Some(row) = rows.next().await? {
+            let name: String = row.get(1)?;
+            if name == column {
+                return Ok(());
+            }
+        }
+        conn.execute(
+            &format!("ALTER TABLE {table} ADD COLUMN {column} {definition}"),
+            (),
         )
         .await?;
         Ok(())
@@ -121,10 +159,12 @@ impl ReviewPersistence {
                 base_ref,
                 head_ref,
                 head_sha,
+                pr_title,
+                pr_url,
                 snapshot_json,
                 created_at,
                 updated_at
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
             ON CONFLICT(id) DO UPDATE SET
                 repo_url = excluded.repo_url,
                 pr_number = excluded.pr_number,
@@ -132,6 +172,8 @@ impl ReviewPersistence {
                 base_ref = excluded.base_ref,
                 head_ref = excluded.head_ref,
                 head_sha = excluded.head_sha,
+                pr_title = excluded.pr_title,
+                pr_url = excluded.pr_url,
                 snapshot_json = excluded.snapshot_json,
                 updated_at = excluded.updated_at
             "#,
@@ -143,6 +185,8 @@ impl ReviewPersistence {
                 state.base_ref,
                 state.head_ref,
                 state.head_sha,
+                state.pr_title,
+                state.pr_url,
                 snapshot_json,
                 now,
                 now,
@@ -170,6 +214,8 @@ impl ReviewPersistence {
                     base_ref,
                     head_ref,
                     head_sha,
+                    pr_title,
+                    pr_url,
                     snapshot_json,
                     created_at,
                     updated_at
@@ -183,7 +229,7 @@ impl ReviewPersistence {
         let Some(row) = rows.next().await? else {
             return Ok(None);
         };
-        let snapshot_json: String = row.get(7)?;
+        let snapshot_json: String = row.get(9)?;
         let local_project_path: Option<String> = row.get(3)?;
         let pr_number: i64 = row.get(2)?;
         Ok(Some(SavedReviewRecord {
@@ -194,11 +240,63 @@ impl ReviewPersistence {
             base_ref: row.get(4)?,
             head_ref: row.get(5)?,
             head_sha: row.get(6)?,
+            pr_title: row.get(7)?,
+            pr_url: row.get(8)?,
             snapshot: serde_json::from_str(&snapshot_json)?,
-            created_at: row.get(8)?,
-            updated_at: row.get(9)?,
+            created_at: row.get(10)?,
+            updated_at: row.get(11)?,
             is_stale: false,
         }))
+    }
+
+    pub async fn list_by_repo(&self, repo_url: &str) -> Result<Vec<SavedReviewRecord>> {
+        let conn = self.db.connect()?;
+        let mut rows = conn
+            .query(
+                r#"
+                SELECT
+                    id,
+                    repo_url,
+                    pr_number,
+                    local_project_path,
+                    base_ref,
+                    head_ref,
+                    head_sha,
+                    pr_title,
+                    pr_url,
+                    snapshot_json,
+                    created_at,
+                    updated_at
+                FROM review_states
+                WHERE repo_url = ?1
+                ORDER BY updated_at DESC, pr_number DESC
+                LIMIT 10
+                "#,
+                params![repo_url],
+            )
+            .await?;
+        let mut records = Vec::new();
+        while let Some(row) = rows.next().await? {
+            let snapshot_json: String = row.get(9)?;
+            let local_project_path: Option<String> = row.get(3)?;
+            let pr_number: i64 = row.get(2)?;
+            records.push(SavedReviewRecord {
+                id: row.get(0)?,
+                repo_url: row.get(1)?,
+                number: pr_number as u64,
+                local_project_path: local_project_path.map(PathBuf::from),
+                base_ref: row.get(4)?,
+                head_ref: row.get(5)?,
+                head_sha: row.get(6)?,
+                pr_title: row.get(7)?,
+                pr_url: row.get(8)?,
+                snapshot: serde_json::from_str(&snapshot_json)?,
+                created_at: row.get(10)?,
+                updated_at: row.get(11)?,
+                is_stale: false,
+            });
+        }
+        Ok(records)
     }
 
     pub async fn delete(&self, target: &ReviewPersistenceTarget) -> Result<()> {
@@ -282,6 +380,8 @@ mod tests {
                 base_ref: "origin/main".to_string(),
                 head_ref: "guided-review-pr-787".to_string(),
                 head_sha: "head-1".to_string(),
+                pr_title: Some("Improve checkout".to_string()),
+                pr_url: Some("https://github.com/garden-co/jazz/pull/787".to_string()),
                 snapshot: json!({
                     "current_section_id": "validation",
                     "sections": [
@@ -300,6 +400,11 @@ mod tests {
         assert_eq!(loaded.base_ref, "origin/main");
         assert_eq!(loaded.head_ref, "guided-review-pr-787");
         assert_eq!(loaded.head_sha, "head-1");
+        assert_eq!(loaded.pr_title.as_deref(), Some("Improve checkout"));
+        assert_eq!(
+            loaded.pr_url.as_deref(),
+            Some("https://github.com/garden-co/jazz/pull/787")
+        );
         assert!(!loaded.is_stale_for("head-1"));
         assert!(loaded.is_stale_for("head-2"));
         assert_eq!(loaded.snapshot["current_section_id"], "validation");
@@ -319,6 +424,8 @@ mod tests {
                 base_ref: "origin/main".to_string(),
                 head_ref: "guided-review-pr-787".to_string(),
                 head_sha: "head-1".to_string(),
+                pr_title: None,
+                pr_url: None,
                 snapshot: json!({ "current_section_id": "overview" }),
             })
             .await
@@ -327,6 +434,109 @@ mod tests {
         store.delete(&target).await.unwrap();
 
         assert!(store.load(&target).await.unwrap().is_none());
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn lists_saved_reviews_for_repo_newest_first() {
+        let path = temp_db_path("list");
+        let store = ReviewPersistence::open_at(&path).await.unwrap();
+        let jazz = target();
+        let older = ReviewPersistenceTarget {
+            repo_url: jazz.repo_url.clone(),
+            number: 100,
+            local_project_path: Some(PathBuf::from("/Users/guidodorsi/dev/jazz")),
+        };
+        let other_repo = ReviewPersistenceTarget {
+            repo_url: "https://github.com/garden-co/other".to_string(),
+            number: 999,
+            local_project_path: None,
+        };
+
+        store
+            .save(SaveReviewState {
+                target: older,
+                base_ref: "origin/main".to_string(),
+                head_ref: "guided-review-pr-100".to_string(),
+                head_sha: "old-head".to_string(),
+                pr_title: Some("Older review".to_string()),
+                pr_url: Some("https://github.com/garden-co/jazz/pull/100".to_string()),
+                snapshot: json!({ "current_section_id": "old" }),
+            })
+            .await
+            .unwrap();
+        store
+            .save(SaveReviewState {
+                target: other_repo,
+                base_ref: "origin/main".to_string(),
+                head_ref: "guided-review-pr-999".to_string(),
+                head_sha: "other-head".to_string(),
+                pr_title: Some("Other repo".to_string()),
+                pr_url: Some("https://github.com/garden-co/other/pull/999".to_string()),
+                snapshot: json!({ "current_section_id": "other" }),
+            })
+            .await
+            .unwrap();
+        store
+            .save(SaveReviewState {
+                target: jazz,
+                base_ref: "origin/main".to_string(),
+                head_ref: "guided-review-pr-787".to_string(),
+                head_sha: "new-head".to_string(),
+                pr_title: Some("Newer review".to_string()),
+                pr_url: Some("https://github.com/garden-co/jazz/pull/787".to_string()),
+                snapshot: json!({ "current_section_id": "new" }),
+            })
+            .await
+            .unwrap();
+
+        let reviews = store
+            .list_by_repo("https://github.com/garden-co/jazz")
+            .await
+            .unwrap();
+
+        assert_eq!(reviews.len(), 2);
+        assert_eq!(reviews[0].number, 787);
+        assert_eq!(reviews[0].pr_title.as_deref(), Some("Newer review"));
+        assert_eq!(reviews[1].number, 100);
+        assert_eq!(reviews[1].pr_title.as_deref(), Some("Older review"));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn lists_only_the_ten_newest_saved_reviews_for_repo() {
+        let path = temp_db_path("list-limit");
+        let store = ReviewPersistence::open_at(&path).await.unwrap();
+
+        for number in 1..=12 {
+            store
+                .save(SaveReviewState {
+                    target: ReviewPersistenceTarget {
+                        repo_url: "https://github.com/garden-co/jazz".to_string(),
+                        number,
+                        local_project_path: None,
+                    },
+                    base_ref: "origin/main".to_string(),
+                    head_ref: format!("guided-review-pr-{number}"),
+                    head_sha: format!("head-{number}"),
+                    pr_title: Some(format!("Review {number}")),
+                    pr_url: Some(format!("https://github.com/garden-co/jazz/pull/{number}")),
+                    snapshot: json!({ "current_section_id": number }),
+                })
+                .await
+                .unwrap();
+        }
+
+        let reviews = store
+            .list_by_repo("https://github.com/garden-co/jazz")
+            .await
+            .unwrap();
+
+        assert_eq!(reviews.len(), 10);
+        assert_eq!(reviews[0].number, 12);
+        assert_eq!(reviews[9].number, 3);
 
         let _ = std::fs::remove_file(path);
     }

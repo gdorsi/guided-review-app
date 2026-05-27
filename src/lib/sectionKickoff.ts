@@ -83,6 +83,15 @@ function formatCommentProtocolInstructions(): string {
 	].join("\n");
 }
 
+function formatVisibleReplyInstructions(): string {
+	return [
+		"Show any user-visible reply by calling the `guided_review_show_message` tool with Markdown in the `markdown` field.",
+		"Do not write user-visible Markdown directly in the assistant message stream.",
+		"Keep private analysis, tool exploration, and planning out of visible text.",
+		"Use the display tool only when there is an actual message for the user.",
+	].join("\n");
+}
+
 export function buildSectionChatKickoffPrefix(args: {
 	session: SessionInfo;
 	section: ReviewSectionState;
@@ -126,8 +135,9 @@ export function buildSectionChatKickoffPrefix(args: {
 		``,
 		formatCommentProtocolInstructions(),
 		``,
+		formatVisibleReplyInstructions(),
+		``,
 		`Stay focused on this section.`,
-		`Do not emit \`acp-section-map\`, \`acp-section\`, or \`acp-pr-description\` blocks — the host owns those.`,
-		`Reply in plain Markdown.`,
+		`Do not emit \`acp-pr-description\`, \`acp-section-map\`, or \`acp-section\` blocks — the host owns those.`,
 	].join("\n");
 }

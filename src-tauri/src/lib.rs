@@ -43,6 +43,7 @@ pub fn run() {
             record_recent_project_cmd,
             save_review_state_cmd,
             delete_saved_review_cmd,
+            list_saved_reviews_for_repo_cmd,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

@@ -222,7 +222,11 @@ fn handle_block(app: &AppHandle, session_id: &str, tag: &str, body: &str, suppre
                     body_len = trimmed.len(),
                 );
                 let _enter = span.enter();
-                tracing::info!(session_id, body_len = trimmed.len(), "pr_description parsed");
+                tracing::info!(
+                    session_id,
+                    body_len = trimmed.len(),
+                    "pr_description parsed"
+                );
                 let _ = app.emit(
                     EV_PR_DESCRIPTION,
                     PrDescriptionEvent {
@@ -312,8 +316,18 @@ fn extract_fenced_blocks(buf: &str) -> Vec<(String, String, usize)> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_lenient;
+    use super::{extract_fenced_blocks, parse_lenient};
     use crate::section::{CommentResult, CommentResultStatus};
+
+    #[test]
+    fn extracts_pr_description_blocks() {
+        let blocks =
+            extract_fenced_blocks("intro\n```acp-pr-description\nA concise PR summary.\n```\nnext");
+
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].0, "acp-pr-description");
+        assert_eq!(blocks[0].1, "A concise PR summary.");
+    }
 
     #[test]
     fn parses_comment_result_block_body() {

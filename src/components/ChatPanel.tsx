@@ -10,11 +10,15 @@ import { Button } from "@/components/ui/button";
 import { FeedbackList } from "./Concerns";
 import { cn } from "@/lib/utils";
 import {
+	ChevronDown,
+	ChevronRight,
+	CircleEllipsis,
 	FileText,
 	ListChecks,
 	LoaderCircle,
 	Map,
 	Maximize2,
+	MessageSquareText,
 	Wrench,
 } from "lucide-react";
 import { recordClientTelemetry, recordClientTelemetryError } from "@/lib/telemetry";
@@ -26,6 +30,7 @@ import {
 import { buildSectionChatKickoffPrefix } from "@/lib/sectionKickoff";
 import {
 	type AssistantBlock,
+	type ThinkingBlockPart,
 	assistantPartsToBlocks,
 	stripMarkdownForSummary,
 } from "@/lib/markdownContent";
@@ -166,22 +171,97 @@ function ToolCallCard({ toolCall }: { toolCall: ToolCallItem }) {
 	);
 }
 
+function ThinkingThread({
+	parts,
+	active,
+}: {
+	parts: ThinkingBlockPart[];
+	active: boolean;
+}) {
+	const [open, setOpen] = useState(active);
+	const toolCallCount = parts.filter((part) => part.type === "tool_call").length;
+
+	useEffect(() => {
+		setOpen(active);
+	}, [active]);
+
+	return (
+		<div className="rounded-md border border-border bg-muted/20 text-muted-foreground">
+			<button
+				type="button"
+				className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-xs"
+				onClick={() => setOpen((value) => !value)}
+				aria-expanded={open}
+			>
+				{open ? (
+					<ChevronDown className="size-3.5 shrink-0" />
+				) : (
+					<ChevronRight className="size-3.5 shrink-0" />
+				)}
+				<CircleEllipsis className="size-3.5 shrink-0" />
+				<span className="min-w-0 flex-1 truncate font-medium">
+					{active ? "Thinking" : "Thinking collapsed"}
+				</span>
+				{toolCallCount > 0 && (
+					<span className="rounded bg-background/70 px-1.5 py-0.5 font-mono text-[10px]">
+						{toolCallCount} tool{toolCallCount === 1 ? "" : "s"}
+					</span>
+				)}
+			</button>
+			{open && (
+				<div className="space-y-1.5 border-t border-border px-2.5 py-2">
+					{parts.map((part, index) =>
+						part.type === "text" ? (
+							<div
+								key={index}
+								className="whitespace-pre-wrap break-words text-xs leading-relaxed"
+							>
+								{part.text}
+							</div>
+						) : (
+							<ToolCallCard
+								key={`${part.toolCall.tool_call_id}-${index}`}
+								toolCall={part.toolCall}
+							/>
+						),
+					)}
+				</div>
+			)}
+		</div>
+	);
+}
+
+function AssistantResponseCard({ markdown }: { markdown: string }) {
+	return (
+		<div className="rounded-md border border-border bg-card px-3 py-2 text-foreground">
+			<div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+				<MessageSquareText className="size-3.5" />
+				<span>Response</span>
+			</div>
+			<MarkdownViewer markdown={markdown} />
+		</div>
+	);
+}
+
 function AssistantBlocks({
 	blocks,
+	activeThinking = false,
 	className,
 }: {
 	blocks: AssistantBlock[];
+	activeThinking?: boolean;
 	className?: string;
 }) {
 	return (
 		<div className={cn("space-y-2", className)}>
 			{blocks.map((block, index) =>
-				block.type === "markdown" ? (
-					<MarkdownViewer key={index} markdown={block.markdown} />
+				block.type === "response" ? (
+					<AssistantResponseCard key={index} markdown={block.markdown} />
 				) : (
-					<ToolCallCard
-						key={`${block.toolCall.tool_call_id}-${index}`}
-						toolCall={block.toolCall}
+					<ThinkingThread
+						key={index}
+						parts={block.parts}
+						active={activeThinking}
 					/>
 				),
 			)}
@@ -198,17 +278,20 @@ function AssistantResponseView({
 	blocks: AssistantBlock[];
 	onOpenFullPage: (blocks: AssistantBlock[]) => void;
 }) {
-	const canOpenFullPage = blocks.length > 0;
+	const responseBlocks = blocks.filter((block) => block.type === "response");
+	const canOpenFullPage = responseBlocks.length > 0;
+	const hasResponse = responseBlocks.length > 0;
+	const activeThinking = Boolean(message.streaming && !hasResponse);
 
 	return (
-		<div className="relative rounded-md border border-border bg-card px-3 py-2 text-foreground">
+		<div className="relative">
 			{canOpenFullPage && (
 				<Button
 					type="button"
 					variant="ghost"
 					size="icon"
 					className="absolute right-1.5 top-1.5 h-7 w-7 text-muted-foreground hover:text-foreground"
-					onClick={() => onOpenFullPage(blocks)}
+					onClick={() => onOpenFullPage(responseBlocks)}
 					title="Open response"
 					aria-label="Open response"
 				>
@@ -217,6 +300,7 @@ function AssistantResponseView({
 			)}
 			<AssistantBlocks
 				blocks={blocks}
+				activeThinking={activeThinking}
 				className={canOpenFullPage ? "pr-7" : undefined}
 			/>
 			{message.streaming && (
@@ -387,8 +471,6 @@ export function ChatPanel() {
 					"message.length": body.length,
 				});
 			} catch (e) {
-				// If the send fails because the session was killed externally, drop the
-				// mapping so the next attempt re-spawns.
 				detachSectionChatSession(targetSectionId);
 				throw e;
 			}
@@ -466,105 +548,105 @@ export function ChatPanel() {
 				onScroll={handleChatScroll}
 				className="flex-1 space-y-3 overflow-y-auto px-4 py-4"
 			>
-				{chat.map((m) => {
-					if (m.item) {
-						return (
-							<div key={m.id} className="chat-scroll-item space-y-1">
-								<div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-									{m.role}
+						{chat.map((m) => {
+							if (m.item) {
+								return (
+									<div key={m.id} className="chat-scroll-item space-y-1">
+										<div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+											{m.role}
+										</div>
+										<ChatItemView item={m.item} />
+									</div>
+								);
+							}
+							if (m.role === "user") {
+								if (!m.text.trim()) return null;
+								return (
+									<div key={m.id} className="chat-scroll-item space-y-1">
+										<div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+											{m.role}
+										</div>
+										<div
+											className={cn(
+												"whitespace-pre-wrap break-words rounded-md px-3 py-2 text-sm leading-relaxed",
+												"bg-primary/15 text-foreground",
+											)}
+										>
+											{m.text}
+											{m.streaming && (
+												<span className="ml-0.5 animate-pulse">▋</span>
+											)}
+										</div>
+									</div>
+								);
+							}
+							const blocks = assistantPartsToBlocks(partsFromMessage(m));
+							if (blocks.length === 0 && !m.streaming) return null;
+							return (
+								<div key={m.id} className="chat-scroll-item space-y-1">
+									<div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+										{m.role}
+									</div>
+									<AssistantResponseView
+										message={m}
+										blocks={blocks}
+										onOpenFullPage={setFullPageBlocks}
+									/>
 								</div>
-								<ChatItemView item={m.item} />
-							</div>
-						);
-					}
-					if (m.role === "user") {
-						if (!m.text.trim()) return null;
-						return (
-							<div key={m.id} className="chat-scroll-item space-y-1">
-								<div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-									{m.role}
+							);
+						})}
+						{streaming &&
+							(chat.length === 0 || chat[chat.length - 1].role === "user") && (
+								<div className="chat-scroll-item flex items-center gap-1.5 self-start rounded-md border border-border bg-card px-3 py-2 text-xs text-muted-foreground">
+									<span className="block h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/60 [animation-delay:0ms]" />
+									<span className="block h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/60 [animation-delay:150ms]" />
+									<span className="block h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/60 [animation-delay:300ms]" />
+									<span className="ml-1">agent thinking…</span>
 								</div>
-								<div
-									className={cn(
-										"whitespace-pre-wrap break-words rounded-md px-3 py-2 text-sm leading-relaxed",
-										"bg-primary/15 text-foreground",
-									)}
-								>
-									{m.text}
-									{m.streaming && (
-										<span className="ml-0.5 animate-pulse">▋</span>
-									)}
-								</div>
-							</div>
-						);
-					}
-					const blocks = assistantPartsToBlocks(partsFromMessage(m));
-					if (blocks.length === 0 && !m.streaming) return null;
-					return (
-						<div key={m.id} className="chat-scroll-item space-y-1">
-							<div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-								{m.role}
-							</div>
-							<AssistantResponseView
-								message={m}
-								blocks={blocks}
-								onOpenFullPage={setFullPageBlocks}
-							/>
-						</div>
-					);
-				})}
-				{streaming &&
-					(chat.length === 0 || chat[chat.length - 1].role === "user") && (
-						<div className="chat-scroll-item flex items-center gap-1.5 self-start rounded-md border border-border bg-card px-3 py-2 text-xs text-muted-foreground">
-							<span className="block h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/60 [animation-delay:0ms]" />
-							<span className="block h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/60 [animation-delay:150ms]" />
-							<span className="block h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/60 [animation-delay:300ms]" />
-							<span className="ml-1">agent thinking…</span>
-						</div>
-					)}
-				<div
-					ref={bottomAnchorRef}
-					className="chat-scroll-anchor !mt-0"
-					aria-hidden="true"
-				/>
+							)}
+						<div
+							ref={bottomAnchorRef}
+							className="chat-scroll-anchor !mt-0"
+							aria-hidden="true"
+						/>
 			</div>
 			<div className="space-y-2 border-t border-border bg-background/40 p-3">
-				{processingSectionIds.length > 0 && (
-					<div className="flex items-center gap-2 rounded-md border border-primary/30 bg-primary/10 px-3 py-2 text-xs font-medium text-primary">
-						<LoaderCircle className="size-3.5 animate-spin" />
-						<span>
-							{processingSectionIds.length === 1
-								? `Agent is processing ${processingSection ? `“${processingSection.title}”` : "this section"}…`
-								: `Agent is processing ${processingSectionIds.length} sections…`}
-						</span>
-					</div>
-				)}
-				<Textarea
-					ref={textareaRef}
-					value={input}
-					onChange={(e) => setInput(e.target.value)}
-					onKeyDown={onKeyDown}
-					placeholder={
+						{processingSectionIds.length > 0 && (
+							<div className="flex items-center gap-2 rounded-md border border-primary/30 bg-primary/10 px-3 py-2 text-xs font-medium text-primary">
+								<LoaderCircle className="size-3.5 animate-spin" />
+								<span>
+									{processingSectionIds.length === 1
+										? `Agent is processing ${processingSection ? `“${processingSection.title}”` : "this section"}…`
+										: `Agent is processing ${processingSectionIds.length} sections…`}
+								</span>
+							</div>
+						)}
+						<Textarea
+							ref={textareaRef}
+							value={input}
+							onChange={(e) => setInput(e.target.value)}
+							onKeyDown={onKeyDown}
+							placeholder={
 						session
 							? isPrDescription
-								? "Ask about the overall PR…  (Enter to send · ⌘+Enter for newline)"
+								? "Ask about the PR description…  (Enter to send · ⌘+Enter for newline)"
 								: hasSectionChatSession
 									? "Reply to the agent…  (Enter to send · ⌘+Enter for newline)"
 									: "Start a chat for this section…  (Enter to send · ⌘+Enter for newline)"
 							: "Start a session first"
 					}
-					disabled={!session}
-					rows={3}
-				/>
-				<div className="flex items-center justify-end gap-2">
-					<Button
-						size="sm"
-						onClick={send}
-						disabled={!session || !input.trim()}
-					>
-						Send
-					</Button>
-				</div>
+							disabled={!session}
+							rows={3}
+						/>
+						<div className="flex items-center justify-end gap-2">
+							<Button
+								size="sm"
+								onClick={send}
+								disabled={!session || !input.trim()}
+							>
+								Send
+							</Button>
+						</div>
 			</div>
 		</aside>
 	);

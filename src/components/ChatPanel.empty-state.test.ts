@@ -25,3 +25,30 @@ test("ChatPanel uses a bottom anchor instead of forcing scrollTop on every updat
 	assert.match(src, /chat-scroll-anchor/);
 	assert.doesNotMatch(src, /scrollTop\s*=\s*[^;]*scrollHeight/);
 });
+
+test("ChatPanel isolates chat timelines by active section", async () => {
+	const src = await readFile(chatPanelPath, "utf8");
+
+	assert.match(src, /const chat = chatBySection\[activeSectionId\] \?\? \[\]/);
+	assert.match(src, /addUserMessage\(body, targetSectionId\)/);
+	assert.match(src, /startSectionChat/);
+	assert.match(src, /buildSectionChatKickoffPrefix/);
+	assert.match(src, /hasSectionChatSession/);
+});
+
+test("ChatPanel renders thinking and display responses with dedicated components", async () => {
+	const src = await readFile(chatPanelPath, "utf8");
+
+	assert.match(src, /function ThinkingThread/);
+	assert.match(src, /function AssistantResponseCard/);
+	assert.match(src, /Thinking collapsed/);
+	assert.match(src, /block\.type === "response"/);
+});
+
+test("ChatPanel only opens full screen for response blocks", async () => {
+	const src = await readFile(chatPanelPath, "utf8");
+
+	assert.match(src, /responseBlocks = blocks\.filter/);
+	assert.match(src, /canOpenFullPage = responseBlocks\.length > 0/);
+	assert.match(src, /onOpenFullPage\(responseBlocks\)/);
+});

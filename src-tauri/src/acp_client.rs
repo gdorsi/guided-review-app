@@ -1,4 +1,4 @@
-use crate::agent_runner::{prepare_agent_command, AgentKind};
+use crate::agent_runner::{prepare_agent_command, AgentKind, ReasoningEffort};
 use crate::events::*;
 use crate::fenced::FencedBuffers;
 use crate::section::SectionProgressUpdate;
@@ -15,7 +15,7 @@ use agent_client_protocol::{
 };
 use anyhow::{anyhow, Context, Result};
 use schemars::JsonSchema;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -32,6 +32,7 @@ const CAPTURE_ASSISTANT_TEXT_ENV: &str = "GUIDED_REVIEW_CAPTURE_ASSISTANT_TEXT";
 pub struct AcpSession {
     pub session_id: String,
     pub agent_kind: AgentKind,
+    pub reasoning_effort: Option<ReasoningEffort>,
     pub cwd: PathBuf,
     prompt_tx: mpsc::UnboundedSender<PromptRequestMsg>,
     prompt_count: std::sync::atomic::AtomicU64,
@@ -49,6 +50,7 @@ struct PromptRequestMsg {
     origin: Option<String>,
     reason: Option<String>,
     section_id: Option<String>,
+    event_options: PromptEventOptions,
 }
 
 #[derive(Clone)]
@@ -68,6 +70,40 @@ impl Default for SessionEventOptions {
             emit_tool_calls: true,
             emit_turn_done: true,
             auto_shutdown_after_turn: false,
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct PromptEventOptions {
+    event_session_id: Option<String>,
+    emit_text_chunks: Option<bool>,
+    emit_tool_calls: Option<bool>,
+    emit_turn_done: Option<bool>,
+}
+
+impl PromptEventOptions {
+    pub fn background_section_task(event_session_id: String) -> Self {
+        Self {
+            event_session_id: Some(event_session_id),
+            emit_text_chunks: Some(false),
+            emit_tool_calls: Some(false),
+            emit_turn_done: Some(false),
+        }
+    }
+}
+
+impl SessionEventOptions {
+    fn for_prompt(&self, prompt: &PromptEventOptions) -> Self {
+        Self {
+            event_session_id: prompt
+                .event_session_id
+                .clone()
+                .or_else(|| self.event_session_id.clone()),
+            emit_text_chunks: prompt.emit_text_chunks.unwrap_or(self.emit_text_chunks),
+            emit_tool_calls: prompt.emit_tool_calls.unwrap_or(self.emit_tool_calls),
+            emit_turn_done: prompt.emit_turn_done.unwrap_or(self.emit_turn_done),
+            auto_shutdown_after_turn: self.auto_shutdown_after_turn,
         }
     }
 }
@@ -124,6 +160,44 @@ impl McpTool<Agent> for GuidedReviewUpdateSectionTool {
             )
             .is_ok();
         Ok(GuidedReviewUpdateSectionResult { accepted })
+    }
+}
+
+#[derive(Clone)]
+struct GuidedReviewShowMessageTool;
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+struct GuidedReviewShowMessageInput {
+    markdown: String,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+struct GuidedReviewShowMessageResult {
+    accepted: bool,
+}
+
+impl McpTool<Agent> for GuidedReviewShowMessageTool {
+    type Input = GuidedReviewShowMessageInput;
+    type Output = GuidedReviewShowMessageResult;
+
+    fn name(&self) -> String {
+        "guided_review_show_message".to_string()
+    }
+
+    fn description(&self) -> String {
+        "Shows a processed Markdown response to the user in the guided review chat.".to_string()
+    }
+
+    fn title(&self) -> Option<String> {
+        Some("Show message".to_string())
+    }
+
+    async fn call_tool(
+        &self,
+        _input: GuidedReviewShowMessageInput,
+        _context: McpConnectionTo<Agent>,
+    ) -> std::result::Result<GuidedReviewShowMessageResult, agent_client_protocol::Error> {
+        Ok(GuidedReviewShowMessageResult { accepted: true })
     }
 }
 
@@ -262,21 +336,34 @@ impl AcpSessions {
 pub async fn start_session(
     app: AppHandle,
     agent_kind: AgentKind,
+    reasoning_effort: Option<ReasoningEffort>,
     cwd: PathBuf,
 ) -> Result<AcpSession> {
-    start_session_with_options(app, agent_kind, cwd, SessionEventOptions::default()).await
+    start_session_with_options(
+        app,
+        agent_kind,
+        reasoning_effort,
+        cwd,
+        SessionEventOptions::default(),
+    )
+    .await
 }
 
 async fn start_session_with_options(
     app: AppHandle,
     agent_kind: AgentKind,
+    reasoning_effort: Option<ReasoningEffort>,
     cwd: PathBuf,
     event_options: SessionEventOptions,
 ) -> Result<AcpSession> {
     let (session_id_tx, session_id_rx) = oneshot::channel::<String>();
     let (prompt_tx, mut prompt_rx) = mpsc::unbounded_channel::<PromptRequestMsg>();
 
-    let agent_command = agent_kind.launch_command().to_string();
+    let agent_command = crate::agent_runner::AgentLaunchConfig {
+        kind: agent_kind,
+        reasoning_effort,
+    }
+    .launch_command();
     let prepared_command = prepare_agent_command(&agent_command)?;
     let program = prepared_command.program.clone();
 
@@ -290,6 +377,7 @@ async fn start_session_with_options(
         .kill_on_drop(true);
     tracing::info!(
         agent = ?agent_kind,
+        reasoning_effort = ?reasoning_effort,
         program = %program.display(),
         "agent command prepared"
     );
@@ -376,12 +464,13 @@ async fn start_session_with_options(
                     Arc::new(std::sync::Mutex::new(options_for_loop.event_session_id.clone()));
                 let section_progress_server = McpServer::<Agent, _>::builder("guided-review")
                     .instructions(
-                        "Use guided_review_update_section only for review feedback. Do not send files or ranges; the section map and local Git own those.",
+                        "Use guided_review_show_message for any user-visible Markdown reply. Use guided_review_update_section only for review feedback. Do not send files or ranges; the section map and local Git own those.",
                     )
                     .tool(GuidedReviewUpdateSectionTool {
                         app: app_for_loop.clone(),
                         session_id: section_progress_session_id.clone(),
                     })
+                    .tool(GuidedReviewShowMessageTool)
                     .build();
                 let mut active_session = cx
                     .build_session(cwd)
@@ -397,13 +486,14 @@ async fn start_session_with_options(
                         *guard = Some(session_id_str.clone());
                     }
                 }
-                let event_session_id = options_for_loop
-                    .event_session_id
-                    .clone()
-                    .unwrap_or_else(|| session_id_str.clone());
                 let _ = session_id_tx.send(session_id_str.clone());
 
                 while let Some(msg) = prompt_rx.recv().await {
+                    let turn_options = options_for_loop.for_prompt(&msg.event_options);
+                    let event_session_id = turn_options
+                        .event_session_id
+                        .clone()
+                        .unwrap_or_else(|| session_id_str.clone());
                     let turn_span = tracing::info_span!(
                         "acp.prompt_turn",
                         session_id = %session_id_str,
@@ -424,7 +514,7 @@ async fn start_session_with_options(
                                                     handle_notification(
                                                         &app_for_loop,
                                                         notification,
-                                                        &options_for_loop,
+                                                        &turn_options,
                                                     );
                                                     Ok(())
                                                 },
@@ -448,7 +538,7 @@ async fn start_session_with_options(
                                             max_overlap_len = summary.max_overlap_len,
                                             "turn complete",
                                         );
-                                        if options_for_loop.emit_turn_done {
+                                        if turn_options.emit_turn_done {
                                             let _ = app_for_loop.emit(
                                                 EV_TURN_DONE,
                                                 TurnDoneEvent {
@@ -529,61 +619,12 @@ async fn start_session_with_options(
     Ok(AcpSession {
         session_id,
         agent_kind,
+        reasoning_effort,
         cwd: session_cwd,
         prompt_tx,
         prompt_count: std::sync::atomic::AtomicU64::new(0),
         join,
     })
-}
-
-pub fn spawn_section_task(
-    app: AppHandle,
-    agent_kind: AgentKind,
-    cwd: PathBuf,
-    parent_session_id: String,
-    prompt: String,
-    section_id: String,
-) {
-    tokio::spawn(async move {
-        let options = SessionEventOptions {
-            event_session_id: Some(parent_session_id.clone()),
-            emit_text_chunks: false,
-            emit_tool_calls: false,
-            emit_turn_done: false,
-            auto_shutdown_after_turn: true,
-        };
-        match start_session_with_options(app.clone(), agent_kind, cwd, options).await {
-            Ok(sess) => {
-                if let Err(e) = sess.send_prompt(
-                    prompt,
-                    Some("section_background_task".to_string()),
-                    Some("load_section_feedback".to_string()),
-                    Some(section_id),
-                ) {
-                    emit_error(
-                        &app,
-                        Some(parent_session_id),
-                        format!("section task failed to start: {e}"),
-                    );
-                    return;
-                }
-                if let Err(e) = sess.join.await {
-                    emit_error(
-                        &app,
-                        Some(parent_session_id),
-                        format!("section task failed: {e}"),
-                    );
-                }
-            }
-            Err(e) => {
-                emit_error(
-                    &app,
-                    Some(parent_session_id),
-                    format!("section task failed to start: {e}"),
-                );
-            }
-        }
-    });
 }
 
 impl AcpSession {
@@ -593,6 +634,23 @@ impl AcpSession {
         origin: Option<String>,
         reason: Option<String>,
         section_id: Option<String>,
+    ) -> Result<()> {
+        self.send_prompt_with_event_options(
+            text,
+            origin,
+            reason,
+            section_id,
+            PromptEventOptions::default(),
+        )
+    }
+
+    pub fn send_prompt_with_event_options(
+        &self,
+        text: String,
+        origin: Option<String>,
+        reason: Option<String>,
+        section_id: Option<String>,
+        event_options: PromptEventOptions,
     ) -> Result<()> {
         let prompt_index = self
             .prompt_count
@@ -605,6 +663,7 @@ impl AcpSession {
                 origin,
                 reason,
                 section_id,
+                event_options,
             })
             .map_err(|_| anyhow!("session has shut down"))
     }
@@ -684,6 +743,7 @@ fn handle_notification(app: &AppHandle, notif: SessionNotification, options: &Se
                         session_id: event_session_id.to_string(),
                         message_id: format!("turn-{}", Uuid::new_v4()),
                         text,
+                        kind: "response".to_string(),
                         telemetry_context: telemetry::current_context(),
                     },
                 );
@@ -833,7 +893,10 @@ fn scrub_nested_agent_env(cmd: &mut Command) {
 
 #[cfg(test)]
 mod tests {
-    use super::{capture_assistant_text_enabled_for, shared_boundary_len};
+    use super::{
+        capture_assistant_text_enabled_for, shared_boundary_len, PromptEventOptions,
+        SessionEventOptions,
+    };
 
     #[test]
     fn captures_text_by_default_in_debug_builds() {
@@ -870,5 +933,37 @@ mod tests {
             shared_boundary_len("agent says café", "café today"),
             "café".len()
         );
+    }
+
+    #[test]
+    fn background_section_task_prompt_options_suppress_chat_events() {
+        let options = SessionEventOptions::default().for_prompt(
+            &PromptEventOptions::background_section_task("parent".to_string()),
+        );
+
+        assert_eq!(options.event_session_id.as_deref(), Some("parent"));
+        assert!(!options.emit_text_chunks);
+        assert!(!options.emit_tool_calls);
+        assert!(!options.emit_turn_done);
+        assert!(!options.auto_shutdown_after_turn);
+    }
+
+    #[test]
+    fn default_prompt_options_preserve_session_event_options() {
+        let session_options = SessionEventOptions {
+            event_session_id: Some("alias".to_string()),
+            emit_text_chunks: false,
+            emit_tool_calls: false,
+            emit_turn_done: false,
+            auto_shutdown_after_turn: true,
+        };
+
+        let options = session_options.for_prompt(&PromptEventOptions::default());
+
+        assert_eq!(options.event_session_id.as_deref(), Some("alias"));
+        assert!(!options.emit_text_chunks);
+        assert!(!options.emit_tool_calls);
+        assert!(!options.emit_turn_done);
+        assert!(options.auto_shutdown_after_turn);
     }
 }

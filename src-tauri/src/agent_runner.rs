@@ -22,6 +22,26 @@ pub enum AgentKind {
     Codex,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasoningEffort {
+    Low,
+    Medium,
+    High,
+    Xhigh,
+}
+
+impl ReasoningEffort {
+    pub fn as_config_value(self) -> &'static str {
+        match self {
+            ReasoningEffort::Low => "low",
+            ReasoningEffort::Medium => "medium",
+            ReasoningEffort::High => "high",
+            ReasoningEffort::Xhigh => "xhigh",
+        }
+    }
+}
+
 impl AgentKind {
     pub fn label(self) -> &'static str {
         match self {
@@ -34,6 +54,45 @@ impl AgentKind {
         match self {
             AgentKind::ClaudeCode => "npx -y @zed-industries/claude-code-acp",
             AgentKind::Codex => "npx -y @zed-industries/codex-acp",
+        }
+    }
+
+    pub fn supports_reasoning_effort(self) -> bool {
+        matches!(self, AgentKind::Codex)
+    }
+
+    pub fn reasoning_effort_options(self) -> Vec<ReasoningEffort> {
+        if self.supports_reasoning_effort() {
+            vec![
+                ReasoningEffort::Low,
+                ReasoningEffort::Medium,
+                ReasoningEffort::High,
+                ReasoningEffort::Xhigh,
+            ]
+        } else {
+            Vec::new()
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentLaunchConfig {
+    pub kind: AgentKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<ReasoningEffort>,
+}
+
+impl AgentLaunchConfig {
+    pub fn launch_command(self) -> String {
+        let command = self.kind.launch_command();
+        match (self.kind, self.reasoning_effort) {
+            (AgentKind::Codex, Some(effort)) => {
+                format!(
+                    r#"{command} -c model_reasoning_effort="{}""#,
+                    effort.as_config_value()
+                )
+            }
+            _ => command.to_string(),
         }
     }
 }
@@ -50,6 +109,8 @@ pub struct AgentInfo {
     pub kind: AgentKind,
     pub label: &'static str,
     pub launch_command: &'static str,
+    pub supports_reasoning_effort: bool,
+    pub reasoning_effort_options: Vec<ReasoningEffort>,
 }
 
 pub fn list_agents() -> Vec<AgentInfo> {
@@ -59,6 +120,8 @@ pub fn list_agents() -> Vec<AgentInfo> {
             kind,
             label: kind.label(),
             launch_command: kind.launch_command(),
+            supports_reasoning_effort: kind.supports_reasoning_effort(),
+            reasoning_effort_options: kind.reasoning_effort_options(),
         })
         .collect()
 }
@@ -208,6 +271,55 @@ mod tests {
         let kinds: Vec<AgentKind> = agents.into_iter().map(|agent| agent.kind).collect();
 
         assert_eq!(kinds, vec![AgentKind::ClaudeCode, AgentKind::Codex]);
+    }
+
+    #[test]
+    fn list_agents_reports_reasoning_effort_support() {
+        let agents = list_agents();
+        let claude = agents
+            .iter()
+            .find(|agent| agent.kind == AgentKind::ClaudeCode)
+            .unwrap();
+        let codex = agents
+            .iter()
+            .find(|agent| agent.kind == AgentKind::Codex)
+            .unwrap();
+
+        assert!(!claude.supports_reasoning_effort);
+        assert!(claude.reasoning_effort_options.is_empty());
+        assert!(codex.supports_reasoning_effort);
+        assert_eq!(
+            codex.reasoning_effort_options,
+            vec![
+                ReasoningEffort::Low,
+                ReasoningEffort::Medium,
+                ReasoningEffort::High,
+                ReasoningEffort::Xhigh
+            ]
+        );
+    }
+
+    #[test]
+    fn codex_launch_command_includes_reasoning_effort_override() {
+        let config = AgentLaunchConfig {
+            kind: AgentKind::Codex,
+            reasoning_effort: Some(ReasoningEffort::High),
+        };
+
+        assert_eq!(
+            config.launch_command(),
+            r#"npx -y @zed-industries/codex-acp -c model_reasoning_effort="high""#
+        );
+    }
+
+    #[test]
+    fn launch_command_omits_default_reasoning_effort() {
+        let config = AgentLaunchConfig {
+            kind: AgentKind::Codex,
+            reasoning_effort: None,
+        };
+
+        assert_eq!(config.launch_command(), "npx -y @zed-industries/codex-acp");
     }
 
     #[test]

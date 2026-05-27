@@ -3,6 +3,7 @@ import test from "node:test";
 import {
 	buildAgentRestoreReviewPrompt,
 	buildUserMessageWithReviewContext,
+	historySourceFromSavedReview,
 	type SavedReviewRecord,
 	type ReviewSnapshot,
 } from "./reviewPersistence";
@@ -27,6 +28,7 @@ const session: SessionInfo = {
 		title: "Improve checkout",
 		body: "Checkout accepts coupons.",
 		url: "https://github.com/garden-co/jazz/pull/787",
+		base_ref_name: "main",
 	},
 	published_comments: [
 		{
@@ -94,6 +96,8 @@ const savedReview: SavedReviewRecord = {
 	base_ref: "origin/main",
 	head_ref: "guided-review-pr-787",
 	head_sha: "abc123",
+	pr_title: "Improve checkout",
+	pr_url: "https://github.com/garden-co/jazz/pull/787",
 	snapshot,
 	created_at: 1,
 	updated_at: 2,
@@ -111,6 +115,21 @@ test("buildAgentRestoreReviewPrompt briefs the agent without asking for a new se
 	assert.match(prompt, /"current_section_id": "validation"/);
 	assert.match(prompt, /Empty coupon still passes/);
 	assert.match(prompt, /Already covered/);
+});
+
+test("historySourceFromSavedReview resumes a saved PR in the selected local repo", () => {
+	assert.deepEqual(
+		historySourceFromSavedReview({
+			savedReview,
+			projectPath: "/Users/guidodorsi/dev/jazz",
+		}),
+		{
+			kind: "local_pr",
+			path: "/Users/guidodorsi/dev/jazz",
+			repo_url: "https://github.com/garden-co/jazz",
+			number: 787,
+		},
+	);
 });
 
 test("buildUserMessageWithReviewContext adds hidden current section context", () => {

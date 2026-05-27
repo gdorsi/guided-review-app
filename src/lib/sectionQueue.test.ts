@@ -8,7 +8,7 @@ function prDescription(): SectionState {
 		id: "pr-description",
 		kind: "pr_description",
 		title: "PR description",
-		intent: "Summary",
+		intent: "Overview",
 		status: "in_review",
 		body: "Summary",
 	};

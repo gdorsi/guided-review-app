@@ -2,8 +2,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
 	SELECTED_AGENT_KIND_KEY,
+	SELECTED_AGENT_REASONING_EFFORT_KEY_PREFIX,
 	loadSelectedAgentKind,
+	loadSelectedAgentReasoningEffort,
 	saveSelectedAgentKind,
+	saveSelectedAgentReasoningEffort,
 } from "./agentPreference";
 
 function createMemoryStorage(seed: Record<string, string> = {}): Storage {
@@ -79,4 +82,27 @@ test("agent preference helpers do not throw when storage fails", () => {
 
 	assert.doesNotThrow(() => saveSelectedAgentKind("claude_code", storage));
 	assert.equal(loadSelectedAgentKind(storage), null);
+});
+
+test("agent preference helpers save and load reasoning effort per agent", () => {
+	const storage = createMemoryStorage();
+
+	saveSelectedAgentReasoningEffort("codex", "high", storage);
+
+	assert.equal(
+		storage.getItem(`${SELECTED_AGENT_REASONING_EFFORT_KEY_PREFIX}codex`),
+		"high",
+	);
+	assert.equal(loadSelectedAgentReasoningEffort("codex", storage), "high");
+	assert.equal(loadSelectedAgentReasoningEffort("claude_code", storage), null);
+});
+
+test("agent preference helpers clear default reasoning effort", () => {
+	const storage = createMemoryStorage({
+		[`${SELECTED_AGENT_REASONING_EFFORT_KEY_PREFIX}codex`]: "xhigh",
+	});
+
+	saveSelectedAgentReasoningEffort("codex", null, storage);
+
+	assert.equal(loadSelectedAgentReasoningEffort("codex", storage), null);
 });

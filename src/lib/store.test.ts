@@ -45,6 +45,7 @@ const prSession = {
 		title: "Improve guided review",
 		body: "## Summary\n\nMake the review easier to follow.",
 		url: "https://github.com/openai/codex/pull/123",
+		base_ref_name: "main",
 	},
 };
 
@@ -86,7 +87,9 @@ async function resetReviewState() {
 
 const PR_DESCRIPTION_SECTION_ID = "pr-description";
 
-function prDescriptionChat(state: { chatBySection: Record<string, ChatMessage[]> }) {
+function prDescriptionChat(state: {
+	chatBySection: Record<string, ChatMessage[]>;
+}) {
 	return state.chatBySection[PR_DESCRIPTION_SECTION_ID] ?? [];
 }
 
@@ -130,6 +133,20 @@ test("setSession stores one-off published PR comment context", async () => {
 	assert.equal(typeof fetchedAt, "number");
 	assert(fetchedAt! >= before);
 	assert(fetchedAt! <= after);
+});
+
+test("setPrDescriptionBody updates the synthetic PR description section", async () => {
+	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
+	await resetReviewState();
+
+	useApp.getState().setSession(prSession);
+	useApp.getState().setPrDescriptionBody("A concise branch summary.");
+
+	const [section] = useApp.getState().sections;
+	assert.equal(
+		section?.kind === "pr_description" ? section.body : "",
+		"A concise branch summary.",
+	);
 });
 
 test("setSectionMap keeps PR description first and appends agent sections", async () => {
@@ -903,7 +920,7 @@ test("addReviewSectionItem stores readable files and feedback", async () => {
 	);
 });
 
-test("tool calls stay inline between assistant markdown chunks", async () => {
+test("tool calls stay inside the active assistant thinking thread", async () => {
 	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
 
 	useApp.setState({ chatBySection: {}, streaming: false });
@@ -922,7 +939,7 @@ test("tool calls stay inline between assistant markdown chunks", async () => {
 	assert.equal(message?.role, "assistant");
 	assert.equal(message?.text, "I will check and explain.");
 	assert.deepEqual(message?.parts, [
-		{ type: "markdown", text: "I will check" },
+		{ type: "thinking", text: "I will check" },
 		{
 			type: "tool_call",
 			toolCall: {
@@ -932,7 +949,7 @@ test("tool calls stay inline between assistant markdown chunks", async () => {
 				status: "in_progress",
 			},
 		},
-		{ type: "markdown", text: " and explain." },
+		{ type: "thinking", text: " and explain." },
 	]);
 });
 
@@ -953,7 +970,7 @@ test("replayed assistant chunks dedupe after inline tool calls", async () => {
 	const [message] = prDescriptionChat(useApp.getState()) as ChatMessage[];
 	assert.equal(message?.text, "I will check and explain.");
 	assert.deepEqual(message?.parts, [
-		{ type: "markdown", text: "I will check" },
+		{ type: "thinking", text: "I will check" },
 		{
 			type: "tool_call",
 			toolCall: {
@@ -963,7 +980,7 @@ test("replayed assistant chunks dedupe after inline tool calls", async () => {
 				status: "completed",
 			},
 		},
-		{ type: "markdown", text: " and explain." },
+		{ type: "thinking", text: " and explain." },
 	]);
 });
 
@@ -1008,7 +1025,31 @@ test("appendAssistantChunk hides structured review fences from chat text", async
 		].join("\n"),
 	);
 
-	assert.equal(prDescriptionChat(useApp.getState())[0]?.text, "Here is the map.\nReady.");
+	assert.equal(
+		prDescriptionChat(useApp.getState())[0]?.text,
+		"Here is the map.\nReady.",
+	);
+});
+
+test("appendAssistantChunk hides PR description fences from chat text", async () => {
+	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
+
+	useApp.setState({ chatBySection: {}, streaming: false });
+
+	useApp.getState().appendAssistantChunk(
+		[
+			"Preparing the intro.",
+			"```acp-pr-description",
+			"A concise PR summary.",
+			"```",
+			"Ready.",
+		].join("\n"),
+	);
+
+	assert.equal(
+		prDescriptionChat(useApp.getState())[0]?.text,
+		"Preparing the intro.\nReady.",
+	);
 });
 
 test("structured review fences split around a readable item stay hidden", async () => {
@@ -1057,6 +1098,105 @@ test("structured review fences split around a readable item stay hidden", async 
 	assert.equal(chat[2]?.text.trim(), "Ready when you are.");
 	assert(!chat.some((message) => message.text.includes("```acp-section-map")));
 	assert(!chat.some((message) => message.text.includes("Release metadata")));
+});
+
+test("processed display-message chunks preserve collapsed thinking and add a response", async () => {
+	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
+
+	useApp.setState({ chatBySection: {}, streaming: false });
+
+	useApp.getState().appendAssistantChunk("I am checking files...");
+	useApp.getState().addToolCallItem({
+		tool_call_id: "tool-1",
+		title: "Read file",
+		kind: "read",
+		status: "completed",
+	});
+	useApp.getState().appendAssistantChunk("The section is clear.", {
+		replaceStreaming: true,
+	});
+
+	const [message] = prDescriptionChat(useApp.getState()) as ChatMessage[];
+	assert.equal(message?.text, "The section is clear.");
+	assert.deepEqual(message?.parts, [
+		{ type: "thinking", text: "I am checking files..." },
+		{
+			type: "tool_call",
+			toolCall: {
+				tool_call_id: "tool-1",
+				title: "Read file",
+				kind: "read",
+				status: "completed",
+			},
+		},
+		{ type: "assistant_response", markdown: "The section is clear." },
+	]);
+});
+
+test("agent message chunks render as assistant responses outside thinking", async () => {
+	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
+
+	useApp.setState({ chatBySection: {}, streaming: false });
+
+	useApp.getState().appendAssistantChunk(
+		"Short answer: yes, but it is probably acceptable for the MVP.",
+		{ kind: "response" },
+	);
+
+	const [message] = prDescriptionChat(useApp.getState()) as ChatMessage[];
+	assert.equal(
+		message?.text,
+		"Short answer: yes, but it is probably acceptable for the MVP.",
+	);
+	assert.deepEqual(message?.parts, [
+		{
+			type: "assistant_response",
+			markdown: "Short answer: yes, but it is probably acceptable for the MVP.",
+		},
+	]);
+});
+
+test("response chunks remain outside an existing thinking thread", async () => {
+	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
+
+	useApp.setState({ chatBySection: {}, streaming: false });
+
+	useApp.getState().appendAssistantChunk("I am checking files...");
+	useApp.getState().addToolCallItem({
+		tool_call_id: "tool-1",
+		title: "Read file",
+		kind: "read",
+		status: "completed",
+	});
+	useApp.getState().appendAssistantChunk("Short answer: yes", {
+		kind: "response",
+	});
+	useApp.getState().appendAssistantChunk(
+		", but it is probably acceptable for the MVP.",
+		{ kind: "response" },
+	);
+
+	const [message] = prDescriptionChat(useApp.getState()) as ChatMessage[];
+	assert.equal(
+		message?.text,
+		"Short answer: yes, but it is probably acceptable for the MVP.",
+	);
+	assert.deepEqual(message?.parts, [
+		{ type: "thinking", text: "I am checking files..." },
+		{
+			type: "tool_call",
+			toolCall: {
+				tool_call_id: "tool-1",
+				title: "Read file",
+				kind: "read",
+				status: "completed",
+			},
+		},
+		{
+			type: "assistant_response",
+			markdown: "Short answer: yes, but it is probably acceptable for the MVP.",
+		},
+	]);
 });
 
 test("dismissCommentDraft removes the matching draft only", async () => {

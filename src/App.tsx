@@ -29,6 +29,7 @@ import type {
 	SectionProgressUpdate,
 } from "@/lib/types/section";
 import {
+	parseDisplayMessagePayload,
 	parseReviewSectionPayload,
 	parseSectionMapPayload,
 	parseSectionProgressPayload,
@@ -65,6 +66,7 @@ import {
 	DialogHeader,
 	DialogTitle,
 } from "@/components/ui/dialog";
+import { Badge } from "@/components/ui/badge";
 
 function parseToolSectionMap(raw: unknown): SectionMap | null {
 	return parseSectionMapPayload(raw);
@@ -76,6 +78,10 @@ function parseToolReviewSection(raw: unknown): ReviewSection | null {
 
 function parseToolSectionProgress(raw: unknown): SectionProgressUpdate | null {
 	return parseSectionProgressPayload(raw);
+}
+
+function parseToolDisplayMessage(raw: unknown): { markdown: string } | null {
+	return parseDisplayMessagePayload(raw);
 }
 
 async function enrichSectionMapWithLocalRanges(
@@ -138,6 +144,27 @@ function targetFromReviewSection(section: ReviewSectionState): SectionTaskTarget
 		intent: section.intent,
 		files: section.section?.files ?? [],
 	};
+}
+
+function SavedReviewFreshnessBadge({
+	isStale,
+}: {
+	isStale: boolean | undefined;
+}) {
+	if (isStale === undefined) return null;
+	return (
+		<Badge
+			variant={isStale ? "medium" : "low"}
+			className="shrink-0"
+			title={
+				isStale
+					? "Saved review is stale because the PR head changed."
+					: "Saved review matches the current PR head."
+			}
+		>
+			{isStale ? "stale" : "current"}
+		</Badge>
+	);
 }
 
 export default function App() {
@@ -304,11 +331,6 @@ export default function App() {
 				"acp.session_id": p.session_id,
 				"body.length": p.body.length,
 			});
-			const state = useApp.getState();
-			if (state.session?.pull_request) {
-				// A real PR description from GitHub already wins; ignore the agent's.
-				return;
-			}
 			setPrDescriptionBody(p.body);
 		};
 
@@ -384,6 +406,22 @@ export default function App() {
 		};
 
 		const handleToolCall = async (p: ToolCallEvent) => {
+			const displayMessage = parseToolDisplayMessage(p.raw_input);
+			if (displayMessage) {
+				recordClientTelemetry("client.acp.display_message.received", {
+					"acp.session_id": p.session_id,
+					"acp.tool_call_id": p.tool_call_id,
+					"message.length": displayMessage.markdown.length,
+					"message.text": truncateTelemetryText(displayMessage.markdown),
+				});
+				appendAssistantChunk(displayMessage.markdown, {
+					messageId: p.tool_call_id,
+					replaceStreaming: true,
+					sessionId: p.session_id,
+				});
+				finishAssistantMessage(p.session_id);
+				return;
+			}
 			const sectionProgress = parseToolSectionProgress(p.raw_input);
 			if (sectionProgress) {
 				handleSectionProgress({
@@ -437,6 +475,7 @@ export default function App() {
 					appendAssistantChunk(p.text, {
 						messageId: p.message_id,
 						sessionId: p.session_id,
+						kind: p.kind,
 					});
 				}),
 				on<TurnDoneEvent>("acp://turn-done", (p) => {
@@ -558,9 +597,14 @@ export default function App() {
 				<ProjectPicker />
 				<ReviewLauncher />
 				{session && (
-					<span className="font-mono text-[11px] text-muted-foreground">
-						{session.repo.head_ref} ← {session.repo.base_ref}
-					</span>
+					<div className="flex min-w-0 items-center gap-2">
+						<SavedReviewFreshnessBadge
+							isStale={session.saved_review_is_stale}
+						/>
+						<span className="truncate font-mono text-[11px] text-muted-foreground">
+							{session.repo.head_ref} ← {session.repo.base_ref}
+						</span>
+					</div>
 				)}
 			</header>
 			<main className="min-h-0 overflow-hidden">

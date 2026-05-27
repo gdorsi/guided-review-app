@@ -1,11 +1,12 @@
-use crate::acp_client::{spawn_section_task, start_session, AcpSessions};
-use crate::agent_runner::{list_agents, AgentInfo, AgentKind};
+use crate::acp_client::{start_session, AcpSessions, PromptEventOptions};
+use crate::agent_runner::{list_agents, AgentInfo, AgentKind, ReasoningEffort};
 use crate::gh::{check_installation, GhCliStatus};
 use crate::projects::{self, RecentProject};
 use crate::repo::{
-    fetch_pull_request_metadata, fetch_pull_request_review_comments, get_changed_ranges, get_diff,
-    get_file_at_ref, inspect_origin, parse_pr_url, resolve_source, ClonedRepo, DiffPatch,
-    GithubRepoInfo, PublishedPrComment, PullRequestMetadata, SessionSource,
+    fetch_pull_request_metadata, fetch_pull_request_metadata_for_branch,
+    fetch_pull_request_review_comments, get_changed_ranges, get_diff, get_file_at_ref,
+    inspect_origin, parse_pr_url, resolve_source, ClonedRepo, DiffPatch, GithubRepoInfo,
+    PublishedPrComment, PullRequestMetadata, SessionSource,
 };
 use crate::review_persistence::{
     target_from_source, ReviewPersistence, ReviewPersistenceTarget, SaveReviewState,
@@ -22,6 +23,8 @@ use tracing::Instrument;
 pub struct StartSessionRequest {
     pub source: SessionSource,
     pub agent_kind: AgentKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<ReasoningEffort>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -34,6 +37,22 @@ pub struct StartSessionResponse {
     pub published_comments: Vec<PublishedPrComment>,
     pub published_comments_error: Option<String>,
     pub saved_review: Option<SavedReviewRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedReviewSummary {
+    pub id: String,
+    pub repo_url: String,
+    pub number: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_url: Option<String>,
+    pub base_ref: String,
+    pub head_ref: String,
+    pub head_sha: String,
+    pub created_at: i64,
+    pub updated_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -104,6 +123,7 @@ Files:
 {published_comment_context}{additional_concerns_hint}
 
 Read the diff for this section with your built-in tools. Identify only real concerns that follow from the actual code. Use simple language.
+Use compact, filler-free private notes while analysing. Keep concern text polished, normal, and beginner-friendly.
 
 If the `guided_review_update_section` tool is available, call it once with:
 {{"section_id":"{section_id}","phase":"started"}}
@@ -182,7 +202,12 @@ pub async fn start_session_cmd(
             published_comments_for_source(&req.source).await;
         let saved_review = saved_review_for_source(&req.source, &cloned.head_sha).await;
 
-        let session = start_session(app, req.agent_kind, cloned.path.clone())
+        let session = start_session(
+            app,
+            req.agent_kind,
+            req.reasoning_effort,
+            cloned.path.clone(),
+        )
             .await
             .map_err(|e| {
                 tracing::error!(error = %e, "start_session failed");
@@ -305,7 +330,7 @@ async fn pull_request_metadata_for_source(
         _ => None,
     };
     let Some((repo_url, number)) = target else {
-        return (None, None);
+        return (branch_pull_request_metadata_for_source(source).await, None);
     };
     match fetch_pull_request_metadata(repo_url, number).await {
         Ok(metadata) => (Some(metadata), None),
@@ -315,6 +340,30 @@ async fn pull_request_metadata_for_source(
             (None, Some(message))
         }
     }
+}
+
+async fn branch_pull_request_metadata_for_source(
+    source: &SessionSource,
+) -> Option<PullRequestMetadata> {
+    let target = match source {
+        SessionSource::Branch { repo_url, branch } => Some((repo_url.clone(), branch.clone())),
+        SessionSource::LocalBranch { path, branch } => inspect_origin(path)
+            .await
+            .ok()
+            .map(|origin| (origin.repo_url, branch.clone())),
+        _ => None,
+    };
+    let (repo_url, branch) = target?;
+    fetch_pull_request_metadata_for_branch(&repo_url, branch_pr_lookup_name(&branch))
+        .await
+        .ok()
+}
+
+fn branch_pr_lookup_name(branch: &str) -> &str {
+    branch
+        .trim()
+        .strip_prefix("origin/")
+        .unwrap_or(branch.trim())
 }
 
 fn parse_owner_repo(url: &str) -> (String, String) {
@@ -421,6 +470,44 @@ pub async fn delete_saved_review_cmd(
 }
 
 #[tauri::command]
+pub async fn list_saved_reviews_for_repo_cmd(
+    repo_url: String,
+    telemetry_context: Option<TelemetryContext>,
+) -> Result<Vec<SavedReviewSummary>, String> {
+    let span = command_span(
+        "list_saved_reviews_for_repo_cmd",
+        telemetry_context.as_ref(),
+    );
+    async move {
+        let store = ReviewPersistence::open_default()
+            .await
+            .map_err(|e| e.to_string())?;
+        let records = store
+            .list_by_repo(&repo_url)
+            .await
+            .map_err(|e| e.to_string())?;
+        let summaries = records
+            .into_iter()
+            .map(|record| SavedReviewSummary {
+                id: record.id,
+                repo_url: record.repo_url,
+                number: record.number,
+                pr_title: record.pr_title,
+                pr_url: record.pr_url,
+                base_ref: record.base_ref,
+                head_ref: record.head_ref,
+                head_sha: record.head_sha,
+                created_at: record.created_at,
+                updated_at: record.updated_at,
+            })
+            .collect();
+        Ok(summaries)
+    }
+    .instrument(span)
+    .await
+}
+
+#[tauri::command]
 pub async fn send_message_cmd(
     sessions: State<'_, AcpSessions>,
     session_id: String,
@@ -483,12 +570,15 @@ pub async fn start_section_chat_cmd(
             .await
             .ok_or_else(|| "unknown session".to_string())?;
         let agent_kind = parent.agent_kind;
+        let reasoning_effort = parent.reasoning_effort;
         let cwd = parent.cwd.clone();
         drop(parent);
-        let session = start_session(app, agent_kind, cwd).await.map_err(|e| {
-            tracing::error!(error = %e, "section chat session start failed");
-            e.to_string()
-        })?;
+        let session = start_session(app, agent_kind, reasoning_effort, cwd)
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, "section chat session start failed");
+                e.to_string()
+            })?;
         let session_id = session.session_id.clone();
         tracing::info!(
             section_id = %req.section_id,
@@ -504,7 +594,6 @@ pub async fn start_section_chat_cmd(
 
 #[tauri::command]
 pub async fn start_section_task_cmd(
-    app: AppHandle,
     sessions: State<'_, AcpSessions>,
     req: StartSectionTaskRequest,
     telemetry_context: Option<TelemetryContext>,
@@ -525,17 +614,17 @@ pub async fn start_section_task_cmd(
             agent = ?parent.agent_kind,
             repo = %parent.cwd.display(),
             file_count = req.files.len(),
-            "spawning background section task",
+            "queueing background section task on parent session",
         );
-        spawn_section_task(
-            app,
-            parent.agent_kind,
-            parent.cwd.clone(),
-            req.parent_session_id,
-            prompt,
-            req.section_id,
-        );
-        Ok(())
+        parent
+            .send_prompt_with_event_options(
+                prompt,
+                Some("section_background_task".to_string()),
+                Some("load_section_feedback".to_string()),
+                Some(req.section_id),
+                PromptEventOptions::background_section_task(req.parent_session_id),
+            )
+            .map_err(|e| e.to_string())
     }
     .instrument(span)
     .await
@@ -670,6 +759,27 @@ mod tests {
     }
 
     #[test]
+    fn embedded_agent_skill_documents_token_discipline_without_degrading_output() {
+        assert!(
+            AGENT_SKILL.contains("## Token discipline"),
+            "agent skill should include explicit token-saving guidance"
+        );
+        assert!(
+            AGENT_SKILL.contains("Use compact, filler-free notes"),
+            "agent skill should permit terse private analysis"
+        );
+        assert!(
+            AGENT_SKILL
+                .contains("Do not use caveman-style fragments in any JSON field shown to the user"),
+            "agent skill should keep visible structured fields polished"
+        );
+        assert!(
+            AGENT_SKILL.contains("section `title`, section `intent`, concern `text`"),
+            "agent skill should name the user-visible fields that stay well written"
+        );
+    }
+
+    #[test]
     fn section_task_prompt_is_standalone_and_feedback_only() {
         let req = StartSectionTaskRequest {
             parent_session_id: "parent-session".to_string(),
@@ -692,8 +802,12 @@ mod tests {
         assert!(prompt.contains("Base ref: origin/main"));
         assert!(prompt.contains("Head ref: feature"));
         assert!(prompt.contains("Existing published comments:\n- Already covered."));
+        assert!(prompt.contains("Use compact, filler-free private notes"));
+        assert!(prompt.contains("Keep concern text polished, normal, and beginner-friendly"));
         assert!(prompt.contains("Emit exactly one final ```acp-section fenced block"));
-        assert!(prompt.contains("Do not include `title`, `intent`, `files`, `ranges`, `base_ref`, or `head_ref`"));
+        assert!(prompt.contains(
+            "Do not include `title`, `intent`, `files`, `ranges`, `base_ref`, or `head_ref`"
+        ));
     }
 
     #[test]
@@ -715,5 +829,26 @@ mod tests {
         let prompt = build_section_task_prompt(&req, Path::new("/tmp/repo"));
 
         assert!(prompt.contains("Already surfaced:\n- Concern A\nReturn the full list."));
+    }
+
+    #[test]
+    fn section_task_command_uses_parent_session_instead_of_spawning_one() {
+        let source = include_str!("commands.rs");
+        let start = source
+            .find("pub async fn start_section_task_cmd")
+            .expect("start_section_task_cmd should exist");
+        let end = source[start..]
+            .find("pub async fn end_session_cmd")
+            .expect("end_session_cmd should follow start_section_task_cmd");
+        let body = &source[start..start + end];
+
+        assert!(
+            body.contains("send_prompt_with_event_options"),
+            "section feedback should run in the existing parent session"
+        );
+        assert!(
+            !body.contains("spawn_section_task"),
+            "section feedback should not spawn a fresh ACP session per section"
+        );
     }
 }

@@ -175,3 +175,13 @@ export function parseSectionProgressPayload(
 	if (head_ref) update.head_ref = head_ref;
 	return update;
 }
+
+export function parseDisplayMessagePayload(
+	raw: unknown,
+): { markdown: string } | null {
+	const record = asRecord(raw);
+	if (!record) return null;
+	const markdown = asString(record.markdown) ?? asString(record.message);
+	if (!markdown || markdown.trim().length === 0) return null;
+	return { markdown };
+}

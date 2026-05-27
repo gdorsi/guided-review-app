@@ -23,11 +23,14 @@ import type {
 } from "./reviewPersistence";
 
 export type AgentKind = "claude_code" | "codex";
+export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
 
 export interface AgentInfo {
 	kind: AgentKind;
 	label: string;
 	launch_command: string;
+	supports_reasoning_effort: boolean;
+	reasoning_effort_options: ReasoningEffort[];
 }
 
 export interface GhCliStatus {
@@ -56,6 +59,7 @@ export interface PullRequestMetadata {
 	title: string;
 	body: string;
 	url: string;
+	base_ref_name: string;
 }
 
 export type GithubCommentSide = "LEFT" | "RIGHT";
@@ -85,6 +89,19 @@ export interface StartSessionResponse {
 	saved_review?: SavedReviewRecord;
 }
 
+export interface SavedReviewSummary {
+	id: string;
+	repo_url: string;
+	number: number;
+	pr_title?: string | null;
+	pr_url?: string | null;
+	base_ref: string;
+	head_ref: string;
+	head_sha: string;
+	created_at: number;
+	updated_at: number;
+}
+
 interface StartSectionTaskRequest {
 	parent_session_id: string;
 	section_id: string;
@@ -94,6 +111,7 @@ interface StartSectionTaskRequest {
 	base_ref: string;
 	head_ref: string;
 	published_comment_context: string;
+	additional_concerns_hint?: string;
 }
 
 interface StartSectionChatRequest {
@@ -166,6 +184,7 @@ export interface TextChunkEvent {
 	session_id: string;
 	message_id: string;
 	text: string;
+	kind: "thinking" | "response";
 	telemetry_context?: TelemetryContext;
 }
 
@@ -326,9 +345,14 @@ export const acp = {
 			throw e;
 		}
 	},
-	startSession: async (req: { source: SessionSource; agent_kind: AgentKind }) => {
+	startSession: async (req: {
+		source: SessionSource;
+		agent_kind: AgentKind;
+		reasoning_effort?: ReasoningEffort;
+	}) => {
 		recordClientTelemetry("client.acp.start_session.requested", {
 			"agent.kind": req.agent_kind,
+			"agent.reasoning_effort": req.reasoning_effort,
 			"session.source.kind": req.source.kind,
 		});
 		try {
@@ -337,11 +361,13 @@ export const acp = {
 				{ req },
 				{
 					"agent.kind": req.agent_kind,
+					"agent.reasoning_effort": req.reasoning_effort,
 					"session.source.kind": req.source.kind,
 				},
 			);
 			recordClientTelemetry("client.acp.start_session.succeeded", {
 				"agent.kind": req.agent_kind,
+				"agent.reasoning_effort": req.reasoning_effort,
 				"session.source.kind": req.source.kind,
 				"acp.session_id": response.session_id,
 				"repo.display_slug": response.repo.display_slug,
@@ -354,6 +380,7 @@ export const acp = {
 		} catch (e) {
 			recordClientTelemetryError("client.acp.start_session.failed", e, {
 				"agent.kind": req.agent_kind,
+				"agent.reasoning_effort": req.reasoning_effort,
 				"session.source.kind": req.source.kind,
 			});
 			throw e;
@@ -373,6 +400,12 @@ export const acp = {
 		invokeWithTelemetry<SavedReviewRecord>("save_review_state_cmd", { req }),
 	deleteSavedReview: (target: ReviewPersistenceTarget) =>
 		invokeWithTelemetry<void>("delete_saved_review_cmd", { target }),
+	listSavedReviewsForRepo: (repo_url: string) =>
+		invokeWithTelemetry<SavedReviewSummary[]>(
+			"list_saved_reviews_for_repo_cmd",
+			{ repoUrl: repo_url },
+			{ "repo.url": repo_url },
+		),
 	sendMessage: async (
 		session_id: string,
 		text: string,
