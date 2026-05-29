@@ -89,6 +89,20 @@ export interface StartSessionResponse {
 	saved_review?: SavedReviewRecord;
 }
 
+export interface UpdatePrFromUpstreamRequest {
+	source: SessionSource;
+	previous_repo: ClonedRepo;
+}
+
+export interface UpdatePrFromUpstreamResponse {
+	repo: ClonedRepo;
+	pull_request?: PullRequestMetadata;
+	pull_request_error?: string;
+	published_comments: PublishedPrComment[];
+	published_comments_error?: string;
+	changed_files: string[];
+}
+
 export interface SavedReviewSummary {
 	id: string;
 	repo_url: string;
@@ -382,6 +396,34 @@ export const acp = {
 				"agent.kind": req.agent_kind,
 				"agent.reasoning_effort": req.reasoning_effort,
 				"session.source.kind": req.source.kind,
+			});
+			throw e;
+		}
+	},
+	updatePrFromUpstream: async (req: UpdatePrFromUpstreamRequest) => {
+		recordClientTelemetry("client.acp.pr_update.requested", {
+			"session.source.kind": req.source.kind,
+			"repo.previous_head_sha": req.previous_repo.head_sha,
+		});
+		try {
+			const response = await invokeWithTelemetry<UpdatePrFromUpstreamResponse>(
+				"update_pr_from_upstream_cmd",
+				{ req },
+				{
+					"session.source.kind": req.source.kind,
+					"repo.previous_head_sha": req.previous_repo.head_sha,
+				},
+			);
+			recordClientTelemetry("client.acp.pr_update.succeeded", {
+				"session.source.kind": req.source.kind,
+				"repo.next_head_sha": response.repo.head_sha,
+				"pr_update.changed_file_count": response.changed_files.length,
+			});
+			return response;
+		} catch (e) {
+			recordClientTelemetryError("client.acp.pr_update.failed", e, {
+				"session.source.kind": req.source.kind,
+				"repo.previous_head_sha": req.previous_repo.head_sha,
 			});
 			throw e;
 		}
