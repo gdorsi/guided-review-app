@@ -151,7 +151,8 @@ export const AGENT_REVIEW_PUBLISH_INSTRUCTIONS = [
 	"Create exactly ONE pull request review (not individual comments) using the review event specified below.",
 	"Do not ask the host app to publish them. The host is only holding the marked comments.",
 	"Use the target PR and head SHA below. For inline comments, keep the provided file path, line, and side.",
-	"After each comment is attempted, emit exactly one `acp-comment-result` fenced JSON block for that draft.",
+	"After the review is submitted, emit one `acp-comment-result` fenced JSON block per comment included in it.",
+	"If the review cannot be created at all, emit one `acp-comment-result` block per comment with `status: \"failed\"`.",
 	'Use `status: "published"` and include `url` when GitHub returns one. Use `status: "failed"` and include `error` if GitHub rejects it.',
 ];
 
