@@ -6,6 +6,7 @@ mod fenced;
 mod gh;
 mod projects;
 mod repo;
+mod review_md;
 mod review_persistence;
 mod section;
 mod telemetry;
@@ -37,6 +38,7 @@ pub fn run() {
             get_file_at_ref_cmd,
             get_diff_cmd,
             get_changed_ranges_cmd,
+            write_review_md_cmd,
             parse_pr_url_cmd,
             list_recent_projects_cmd,
             inspect_local_repo_origin_cmd,
