@@ -1328,6 +1328,7 @@ test("applyCommentResult updates failed drafts in place with error status", asyn
 	assert.equal(draft?.id, "draft-456");
 	assert.equal(draft?.status, "error");
 	assert.equal(draft?.error, "GitHub rejected the comment.");
+	assert.equal(draft?.url, undefined);
 });
 
 test("store does not keep diff file collapse state", async () => {
@@ -1354,7 +1355,7 @@ test("addCommentDraft starts unmarked and pending", async () => {
 	assert.equal(draft?.status, "pending");
 });
 
-test("setCommentMarked toggles the marked flag", async () => {
+test("setCommentMarked sets the marked flag", async () => {
 	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
 	await resetReviewState();
 	useApp.getState().addCommentDraft("draft-1", { kind: "top_level", body: "x" });

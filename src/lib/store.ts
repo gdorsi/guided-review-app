@@ -1283,7 +1283,10 @@ export const useApp = create<AppState>((set) => ({
 					? {
 							...d,
 							status: result.status === "published" ? "published" : "error",
-							url: result.url ?? d.url,
+							url:
+								result.status === "published"
+									? result.url ?? d.url
+									: undefined,
 							error: result.error,
 						}
 					: d,
