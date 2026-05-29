@@ -274,6 +274,9 @@ async fn resolve_local_branch_ref(path: &Path, branch: &str) -> Result<String> {
     }
 
     if !trimmed.starts_with("origin/") && !trimmed.starts_with("refs/") {
+        // Prefer the freshly fetched remote-tracking branch when it exists so
+        // local reviews pick up upstream changes even if a stale local branch
+        // with the same name is checked out.
         let remote_ref = format!("origin/{trimmed}");
         if git_commit_exists(path, &remote_ref).await {
             return Ok(remote_ref);
@@ -1079,8 +1082,7 @@ mod tests {
         );
         let new_head = git_output_sync(&repo_path, &["rev-parse", "HEAD"]);
 
-        let changed =
-            changed_diff_files(&repo_path, &base, &old_head, &base, &new_head).unwrap();
+        let changed = changed_diff_files(&repo_path, &base, &old_head, &base, &new_head).unwrap();
 
         assert_eq!(
             changed,
@@ -1331,6 +1333,55 @@ mod tests {
 
         assert_eq!(prepared.head_ref, "origin/feature/review");
         assert_eq!(prepared.head_sha, latest_sha);
+
+        fs::remove_dir_all(&remote_path).unwrap();
+        fs::remove_dir_all(&local_path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn prepare_local_branch_resolves_remote_only_slash_branch() {
+        let remote_path = temp_repo_path("slash-branch-remote");
+        let local_path = temp_repo_path("slash-branch-local");
+        fs::create_dir_all(&remote_path).unwrap();
+
+        run_git_sync(&remote_path, &["init", "-b", "main"]);
+        run_git_sync(&remote_path, &["config", "user.name", "Guided Review Test"]);
+        run_git_sync(
+            &remote_path,
+            &["config", "user.email", "guided-review-test@example.com"],
+        );
+        write_and_commit(&remote_path, "README.md", "base\n", "base");
+
+        run_git_sync(
+            &remote_path,
+            &["checkout", "-b", "chore/remove-peer-secret"],
+        );
+        write_and_commit(&remote_path, "README.md", "chore\n", "chore change");
+        let branch_sha = git_output_sync(&remote_path, &["rev-parse", "chore/remove-peer-secret"]);
+        run_git_sync(&remote_path, &["checkout", "main"]);
+
+        // Default clone leaves the slash branch reachable only as
+        // origin/chore/remove-peer-secret, never as a local branch.
+        run_git_sync(
+            Path::new("."),
+            &[
+                "clone",
+                &remote_path.to_string_lossy(),
+                &local_path.to_string_lossy(),
+            ],
+        );
+        run_git_sync(&local_path, &["config", "user.name", "Guided Review Test"]);
+        run_git_sync(
+            &local_path,
+            &["config", "user.email", "guided-review-test@example.com"],
+        );
+
+        let prepared = prepare_local_branch(&local_path, "chore/remove-peer-secret")
+            .await
+            .unwrap();
+
+        assert_eq!(prepared.head_ref, "origin/chore/remove-peer-secret");
+        assert_eq!(prepared.head_sha, branch_sha);
 
         fs::remove_dir_all(&remote_path).unwrap();
         fs::remove_dir_all(&local_path).unwrap();

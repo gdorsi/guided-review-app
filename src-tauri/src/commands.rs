@@ -304,7 +304,8 @@ pub async fn update_pr_from_upstream_cmd(
             tracing::error!(error = %e, "resolve_source failed during PR update");
             e.to_string()
         })?;
-        let (pull_request, pull_request_error) = pull_request_metadata_for_source(&req.source).await;
+        let (pull_request, pull_request_error) =
+            pull_request_metadata_for_source(&req.source).await;
         let (published_comments, published_comments_error) =
             published_comments_for_source(&req.source).await;
         let changed_files = tokio::task::spawn_blocking({
@@ -341,7 +342,10 @@ pub async fn update_pr_from_upstream_cmd(
 }
 
 fn is_pr_backed_source(source: &SessionSource) -> bool {
-    matches!(source, SessionSource::Pr { .. } | SessionSource::LocalPr { .. })
+    matches!(
+        source,
+        SessionSource::Pr { .. } | SessionSource::LocalPr { .. }
+    )
 }
 
 async fn saved_review_for_source(
