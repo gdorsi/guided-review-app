@@ -128,12 +128,11 @@ interface StartSectionTaskRequest {
 	additional_concerns_hint?: string;
 }
 
-interface StartSectionChatRequest {
+interface StartChatRequest {
 	parent_session_id: string;
-	section_id: string;
 }
 
-interface StartSectionChatResponse {
+interface StartChatResponse {
 	session_id: string;
 }
 
@@ -488,30 +487,26 @@ export const acp = {
 			throw e;
 		}
 	},
-	startSectionChat: async (req: StartSectionChatRequest) => {
-		recordClientTelemetry("client.acp.section_chat.requested", {
+	startChat: async (req: StartChatRequest) => {
+		recordClientTelemetry("client.acp.chat.requested", {
 			"acp.session_id": req.parent_session_id,
-			"section.id": req.section_id,
 		});
 		try {
-			const response = await invokeWithTelemetry<StartSectionChatResponse>(
-				"start_section_chat_cmd",
+			const response = await invokeWithTelemetry<StartChatResponse>(
+				"start_chat_cmd",
 				{ req },
 				{
 					"acp.session_id": req.parent_session_id,
-					"section.id": req.section_id,
 				},
 			);
-			recordClientTelemetry("client.acp.section_chat.succeeded", {
+			recordClientTelemetry("client.acp.chat.succeeded", {
 				"acp.parent_session_id": req.parent_session_id,
 				"acp.session_id": response.session_id,
-				"section.id": req.section_id,
 			});
 			return response;
 		} catch (e) {
-			recordClientTelemetryError("client.acp.section_chat.failed", e, {
+			recordClientTelemetryError("client.acp.chat.failed", e, {
 				"acp.session_id": req.parent_session_id,
-				"section.id": req.section_id,
 			});
 			throw e;
 		}

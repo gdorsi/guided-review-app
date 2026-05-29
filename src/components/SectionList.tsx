@@ -22,6 +22,7 @@ export function SectionList() {
 	const setCurrent = useApp((s) => s.setCurrentSection);
 	const setDiffFocus = useApp((s) => s.setDiffFocus);
 	const drafts = useApp((s) => s.commentDrafts);
+	const overviewConcernGroups = sectionConcernGroups(sections);
 
 	const openConcernLocation = useCallback(
 		(sectionId: string, concern: Concern) => {
@@ -55,6 +56,8 @@ export function SectionList() {
 						const isProcessing = processingIds.includes(s.id);
 						const isSelected = s.id === currentId;
 						const concerns = sectionConcerns(s);
+						const showOverviewConcernGroups =
+							s.kind === "pr_description" && isSelected;
 						return (
 							<li
 								key={s.id}
@@ -122,7 +125,22 @@ export function SectionList() {
 													className="text-xs text-muted-foreground"
 												/>
 											)}
-											{concerns.length > 0 && (
+											{showOverviewConcernGroups &&
+												overviewConcernGroups.length > 0 && (
+													<div className="space-y-3 border-t border-border/40 pt-3">
+														{overviewConcernGroups.map((group) => (
+															<FeedbackList
+																key={group.id}
+																title={`Concerns: ${group.title}`}
+																concerns={group.concerns}
+																onOpenLocation={(concern) =>
+																	openConcernLocation(group.id, concern)
+																}
+															/>
+														))}
+													</div>
+												)}
+											{!showOverviewConcernGroups && concerns.length > 0 && (
 												<FeedbackList
 													title="Concerns"
 													concerns={concerns}
@@ -212,4 +230,25 @@ function CommentDraftsFooter() {
 function sectionConcerns(s: SectionState): Concern[] {
 	if (s.kind !== "review_section") return [];
 	return s.section?.concerns ?? [];
+}
+
+interface SectionConcernGroup {
+	id: string;
+	title: string;
+	concerns: Concern[];
+}
+
+function sectionConcernGroups(sections: SectionState[]): SectionConcernGroup[] {
+	return sections.flatMap((section) => {
+		if (section.kind !== "review_section") return [];
+		const concerns = sectionConcerns(section);
+		if (concerns.length === 0) return [];
+		return [
+			{
+				id: section.id,
+				title: section.title,
+				concerns,
+			},
+		];
+	});
 }

@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { FormEvent } from "react";
+import type { FormEvent, ReactNode } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { Clock3, History, Loader2, Play } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useApp } from "@/lib/store";
@@ -49,7 +50,32 @@ function formatHistoryTime(timestamp: number): string {
 	}).format(new Date(timestamp * 1000));
 }
 
-export function ReviewLauncher() {
+function SavedReviewFreshnessBadge({
+	isStale,
+}: {
+	isStale: boolean | undefined;
+}) {
+	if (isStale === undefined) return null;
+	return (
+		<Badge
+			variant={isStale ? "medium" : "low"}
+			className="shrink-0"
+			title={
+				isStale
+					? "Saved review is stale because the PR head changed."
+					: "Saved review matches the current PR head."
+			}
+		>
+			{isStale ? "stale" : "current"}
+		</Badge>
+	);
+}
+
+interface ReviewLauncherProps {
+	beforeHistory?: ReactNode;
+}
+
+export function ReviewLauncher({ beforeHistory }: ReviewLauncherProps = {}) {
 	const project = useApp((s) => s.project);
 	const session = useApp((s) => s.session);
 	const setSession = useApp((s) => s.setSession);
@@ -271,88 +297,6 @@ export function ReviewLauncher() {
 
 	return (
 		<div className="flex min-w-0 flex-1 items-center gap-2">
-			<DropdownMenu.Root
-				open={historyOpen}
-				onOpenChange={(open) => {
-					setHistoryOpen(open);
-					if (open) void loadHistory();
-				}}
-			>
-				<DropdownMenu.Trigger asChild>
-					<Button
-						type="button"
-						variant="outline"
-						size="sm"
-						className="h-7 px-2"
-						disabled={starting}
-						title="PR history"
-					>
-						{historyLoading ? (
-							<Loader2 className="size-3.5 animate-spin" />
-						) : (
-							<History className="size-3.5" />
-						)}
-						History
-					</Button>
-				</DropdownMenu.Trigger>
-				<DropdownMenu.Portal>
-					<DropdownMenu.Content
-						align="start"
-						sideOffset={6}
-						className="z-50 w-[420px] rounded-md border border-border bg-popover p-1 shadow-2xl"
-					>
-						<div className="flex items-center justify-between border-b border-border px-2 py-1.5">
-							<div className="text-xs font-medium">PR history</div>
-							<div className="text-[11px] text-muted-foreground">
-								{historyLoading ? "loading..." : `${history.length} saved`}
-							</div>
-						</div>
-						{historyError && (
-							<div className="m-2 rounded-md bg-destructive/15 px-2 py-1.5 text-xs text-destructive">
-								{historyError}
-							</div>
-						)}
-						{!historyError && historyLoading && history.length === 0 && (
-							<div className="px-2 py-3 text-xs text-muted-foreground">
-								Loading saved reviews...
-							</div>
-						)}
-						{!historyError && !historyLoading && history.length === 0 && (
-							<div className="px-2 py-3 text-xs text-muted-foreground">
-								No saved PR reviews for this repo.
-							</div>
-						)}
-						{history.map((review) => (
-							<DropdownMenu.Item
-								key={review.id}
-								className="flex cursor-default items-start gap-2 rounded-sm px-2 py-2 text-xs outline-hidden hover:bg-accent focus:bg-accent"
-								disabled={starting}
-								onSelect={(event) => {
-									event.preventDefault();
-									void resumeHistoryReview(review);
-								}}
-							>
-								<Clock3 className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
-								<div className="min-w-0 flex-1">
-									<div className="flex min-w-0 items-center gap-2">
-										<div className="truncate font-medium">
-											{historyLabel(review)}
-										</div>
-									</div>
-									<div className="mt-0.5 flex min-w-0 items-center gap-2 text-[11px] text-muted-foreground">
-										<span className="shrink-0">
-											Updated {formatHistoryTime(review.updated_at)}
-										</span>
-										<span className="truncate font-mono">
-											{review.head_ref} {"->"} {review.base_ref}
-										</span>
-									</div>
-								</div>
-							</DropdownMenu.Item>
-						))}
-					</DropdownMenu.Content>
-				</DropdownMenu.Portal>
-			</DropdownMenu.Root>
 			<form onSubmit={onSubmit} className="flex min-w-0 flex-1 items-center gap-2">
 				<Input
 					value={input}
@@ -431,6 +375,92 @@ export function ReviewLauncher() {
 					{error ?? validationError}
 				</span>
 			)}
+			<SavedReviewFreshnessBadge
+				isStale={session?.saved_review_is_stale}
+			/>
+			{beforeHistory}
+			<DropdownMenu.Root
+				open={historyOpen}
+				onOpenChange={(open) => {
+					setHistoryOpen(open);
+					if (open) void loadHistory();
+				}}
+			>
+				<DropdownMenu.Trigger asChild>
+					<Button
+						type="button"
+						variant="outline"
+						size="sm"
+						className="h-7 px-2"
+						disabled={starting}
+						title="PR history"
+					>
+						{historyLoading ? (
+							<Loader2 className="size-3.5 animate-spin" />
+						) : (
+							<History className="size-3.5" />
+						)}
+						History
+					</Button>
+				</DropdownMenu.Trigger>
+				<DropdownMenu.Portal>
+					<DropdownMenu.Content
+						align="end"
+						sideOffset={6}
+						className="z-50 w-[420px] rounded-md border border-border bg-popover p-1 shadow-2xl"
+					>
+						<div className="flex items-center justify-between border-b border-border px-2 py-1.5">
+							<div className="text-xs font-medium">PR history</div>
+							<div className="text-[11px] text-muted-foreground">
+								{historyLoading ? "loading..." : `${history.length} saved`}
+							</div>
+						</div>
+						{historyError && (
+							<div className="m-2 rounded-md bg-destructive/15 px-2 py-1.5 text-xs text-destructive">
+								{historyError}
+							</div>
+						)}
+						{!historyError && historyLoading && history.length === 0 && (
+							<div className="px-2 py-3 text-xs text-muted-foreground">
+								Loading saved reviews...
+							</div>
+						)}
+						{!historyError && !historyLoading && history.length === 0 && (
+							<div className="px-2 py-3 text-xs text-muted-foreground">
+								No saved PR reviews for this repo.
+							</div>
+						)}
+						{history.map((review) => (
+							<DropdownMenu.Item
+								key={review.id}
+								className="flex cursor-default items-start gap-2 rounded-sm px-2 py-2 text-xs outline-hidden hover:bg-accent focus:bg-accent"
+								disabled={starting}
+								onSelect={(event) => {
+									event.preventDefault();
+									void resumeHistoryReview(review);
+								}}
+							>
+								<Clock3 className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
+								<div className="min-w-0 flex-1">
+									<div className="flex min-w-0 items-center gap-2">
+										<div className="truncate font-medium">
+											{historyLabel(review)}
+										</div>
+									</div>
+									<div className="mt-0.5 flex min-w-0 items-center gap-2 text-[11px] text-muted-foreground">
+										<span className="shrink-0">
+											Updated {formatHistoryTime(review.updated_at)}
+										</span>
+										<span className="truncate font-mono">
+											{review.head_ref} {"->"} {review.base_ref}
+										</span>
+									</div>
+								</div>
+							</DropdownMenu.Item>
+						))}
+					</DropdownMenu.Content>
+				</DropdownMenu.Portal>
+			</DropdownMenu.Root>
 		</div>
 	);
 }

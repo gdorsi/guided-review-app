@@ -614,27 +614,25 @@ pub async fn send_message_cmd(
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StartSectionChatRequest {
+pub struct StartChatRequest {
     pub parent_session_id: String,
-    pub section_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StartSectionChatResponse {
+pub struct StartChatResponse {
     pub session_id: String,
 }
 
 #[tauri::command]
-pub async fn start_section_chat_cmd(
+pub async fn start_chat_cmd(
     app: AppHandle,
     sessions: State<'_, AcpSessions>,
-    req: StartSectionChatRequest,
+    req: StartChatRequest,
     telemetry_context: Option<TelemetryContext>,
-) -> Result<StartSectionChatResponse, String> {
+) -> Result<StartChatResponse, String> {
     let span = tracing::info_span!(
-        "section_chat.start",
+        "chat.start",
         parent_session_id = %req.parent_session_id,
-        section_id = %req.section_id,
     );
     telemetry::set_span_parent(&span, telemetry_context.as_ref());
     async move {
@@ -649,17 +647,16 @@ pub async fn start_section_chat_cmd(
         let session = start_session(app, agent_kind, reasoning_effort, cwd)
             .await
             .map_err(|e| {
-                tracing::error!(error = %e, "section chat session start failed");
+                tracing::error!(error = %e, "chat session start failed");
                 e.to_string()
             })?;
         let session_id = session.session_id.clone();
         tracing::info!(
-            section_id = %req.section_id,
             session_id = %session_id,
-            "section chat session ready",
+            "chat session ready",
         );
         sessions.insert(session).await;
-        Ok(StartSectionChatResponse { session_id })
+        Ok(StartChatResponse { session_id })
     }
     .instrument(span)
     .await

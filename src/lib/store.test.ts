@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import type { ChatMessage } from "./types/section";
 import type { LocalProject } from "./projectSource";
-import type { SectionState } from "./store";
+import type { AppState, ChatTab, SectionState } from "./store";
 
 const storage = new Map<string, string>();
 
@@ -68,10 +68,11 @@ async function resetReviewState() {
 		sections: [],
 		currentSectionId: null,
 		processingSectionIds: [],
-		chatBySection: {},
-		sessionBySection: {},
-		sectionForSession: {},
-		sectionChatLru: [],
+		chatTabs: [],
+		activeChatTabId: null,
+		chatByTab: {},
+		sessionByChatTab: {},
+		chatTabForSession: {},
 		commentDrafts: [],
 		publishedComments: [],
 		publishedCommentsFetchedAt: null,
@@ -85,12 +86,29 @@ async function resetReviewState() {
 	});
 }
 
-const PR_DESCRIPTION_SECTION_ID = "pr-description";
+const OVERVIEW_CHAT_TAB_ID = "overview";
 
-function prDescriptionChat(state: {
-	chatBySection: Record<string, ChatMessage[]>;
-}) {
-	return state.chatBySection[PR_DESCRIPTION_SECTION_ID] ?? [];
+function overviewChat(state: AppState) {
+	return state.chatByTab[OVERVIEW_CHAT_TAB_ID] ?? [];
+}
+
+function clearChatState(useApp: { setState: (patch: object) => void }) {
+	useApp.setState({
+		currentSectionId: null,
+		chatTabs: [
+			{
+				id: OVERVIEW_CHAT_TAB_ID,
+				title: "Overview",
+				createdAt: Date.now(),
+			},
+		],
+		activeChatTabId: OVERVIEW_CHAT_TAB_ID,
+		chatByTab: {},
+		sessionByChatTab: {},
+		chatTabForSession: {},
+		streaming: false,
+		structuredReviewBlockOpen: false,
+	});
 }
 
 test("setSession creates and selects the PR description section when metadata is available", async () => {
@@ -102,7 +120,7 @@ test("setSession creates and selects the PR description section when metadata is
 	const [section] = useApp.getState().sections;
 	assert.equal(section?.kind, "pr_description");
 	assert.equal(section?.id, "pr-description");
-	assert.equal(section?.title, "PR description");
+	assert.equal(section?.title, "Overview");
 	assert.equal(section?.intent, "Improve guided review");
 	assert.equal(section?.status, "in_review");
 	assert.equal(
@@ -133,6 +151,93 @@ test("setSession stores one-off published PR comment context", async () => {
 	assert.equal(typeof fetchedAt, "number");
 	assert(fetchedAt! >= before);
 	assert(fetchedAt! <= after);
+});
+
+test("refreshSessionMetadata updates PR metadata without rebuilding review state", async () => {
+	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
+	await resetReviewState();
+
+	useApp.getState().setSession({
+		...prSession,
+		published_comments: [publishedComment],
+	});
+	useApp.getState().setSectionMap([
+		{
+			section_id: "api",
+			title: "API",
+			intent: "Review API changes",
+			files: ["src/api.ts"],
+		},
+	]);
+	useApp.getState().setCurrentSection("api", "test");
+	useApp.getState().addUserMessage("question", OVERVIEW_CHAT_TAB_ID);
+
+	const before = Date.now();
+	useApp.getState().refreshSessionMetadata({
+		repo: {
+			...repo,
+			head_sha: "def456",
+			head_ref: "guided-review-pr-123",
+		},
+		pull_request: {
+			title: "Updated PR",
+			body: "Updated body",
+			url: "https://github.com/openai/codex/pull/123",
+			base_ref_name: "main",
+		},
+		pull_request_error: undefined,
+		published_comments: [],
+		published_comments_error: "comments unavailable",
+	});
+	const after = Date.now();
+
+	const state = useApp.getState();
+	assert.equal(state.session?.repo.head_sha, "def456");
+	assert.equal(state.session?.pull_request?.title, "Updated PR");
+	assert.equal(state.currentSectionId, "api");
+	assert.deepEqual(
+		state.sections.map((section: SectionState) => section.id),
+		["pr-description", "api"],
+	);
+	assert.deepEqual(
+			state.chatTabs.map((tab: ChatTab) => tab.id),
+		[OVERVIEW_CHAT_TAB_ID],
+	);
+	assert.equal(state.activeChatTabId, OVERVIEW_CHAT_TAB_ID);
+	assert.equal(overviewChat(state).length, 1);
+	assert.deepEqual(state.publishedComments, []);
+	assert.equal(state.publishedCommentsError, "comments unavailable");
+	assert(state.publishedCommentsFetchedAt! >= before);
+	assert(state.publishedCommentsFetchedAt! <= after);
+});
+
+test("setSession seeds only the Overview chat tab attached to the parent session", async () => {
+	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
+	await resetReviewState();
+
+	useApp.getState().setSession(prSession);
+
+	const state = useApp.getState();
+	assert.deepEqual(
+			state.chatTabs.map((tab: ChatTab) => ({
+			id: tab.id,
+			title: tab.title,
+			hasCreatedAt: typeof tab.createdAt === "number",
+			hasSectionId: "sectionId" in tab,
+		})),
+		[
+			{
+				id: "overview",
+				title: "Overview",
+				hasCreatedAt: true,
+				hasSectionId: false,
+			},
+		],
+	);
+	assert.equal(state.activeChatTabId, "overview");
+	assert.deepEqual(state.chatByTab.overview, []);
+	assert.equal(state.sessionByChatTab.overview, prSession.session_id);
+	assert.equal(state.chatTabForSession[prSession.session_id], "overview");
 });
 
 test("setPrDescriptionBody updates the synthetic PR description section", async () => {
@@ -656,7 +761,7 @@ test("App-style flow surfaces a chat card for a feedback-only section using the 
 		useApp.getState().addReviewSectionItem(merged.section);
 	}
 
-	const chat = prDescriptionChat(useApp.getState());
+	const chat = overviewChat(useApp.getState());
 	const last = chat[chat.length - 1];
 	assert.equal(last?.item?.type, "review_section");
 	assert.equal(
@@ -725,7 +830,7 @@ test("App-style flow appends a fresh chat card every time feedback arrives for t
 	deliverFeedback("first finding");
 	deliverFeedback("second finding");
 
-	const cards = prDescriptionChat(useApp.getState()).filter(
+	const cards = overviewChat(useApp.getState()).filter(
 		(m: ChatMessage) => m.item?.type === "review_section",
 	);
 	assert.equal(cards.length, 2);
@@ -760,14 +865,14 @@ test("setProject saves and clears the last selected project path", async () => {
 test("appendAssistantChunk merges overlapping text chunks", async () => {
 	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
 
-	useApp.setState({ chatBySection: {}, streaming: false });
+	clearChatState(useApp);
 	useApp.getState().appendAssistantChunk("This");
 	useApp
 		.getState()
 		.appendAssistantChunk("This function checks which agent providers");
 
 	assert.equal(
-		prDescriptionChat(useApp.getState())[0]?.text,
+		overviewChat(useApp.getState())[0]?.text,
 		"This function checks which agent providers",
 	);
 });
@@ -775,7 +880,7 @@ test("appendAssistantChunk merges overlapping text chunks", async () => {
 test("appendAssistantChunk keeps normal chunks while removing shared boundaries", async () => {
 	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
 
-	useApp.setState({ chatBySection: {}, streaming: false });
+	clearChatState(useApp);
 	useApp
 		.getState()
 		.appendAssistantChunk("available for Codex, Claude Code");
@@ -784,7 +889,7 @@ test("appendAssistantChunk keeps normal chunks while removing shared boundaries"
 		.appendAssistantChunk("Claude Code, and Cursor on this machine.");
 
 	assert.equal(
-		prDescriptionChat(useApp.getState())[0]?.text,
+		overviewChat(useApp.getState())[0]?.text,
 		"available for Codex, Claude Code, and Cursor on this machine.",
 	);
 });
@@ -854,7 +959,7 @@ test("section processing tracks multiple background section tasks independently"
 test("addSectionMapItem stores readable section map details", async () => {
 	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
 
-	useApp.setState({ chatBySection: {}, streaming: false });
+	clearChatState(useApp);
 
 	useApp.getState().addSectionMapItem([
 		{
@@ -869,9 +974,9 @@ test("addSectionMapItem stores readable section map details", async () => {
 		},
 	]);
 
-	assert.equal(prDescriptionChat(useApp.getState()).length, 1);
-	assert.equal(prDescriptionChat(useApp.getState())[0]?.role, "assistant");
-	const mapItem = prDescriptionChat(useApp.getState())[0]?.item;
+	assert.equal(overviewChat(useApp.getState()).length, 1);
+	assert.equal(overviewChat(useApp.getState())[0]?.role, "assistant");
+	const mapItem = overviewChat(useApp.getState())[0]?.item;
 	assert.equal(mapItem?.type, "section_map");
 	assert.equal(
 		mapItem?.type === "section_map" ? mapItem.sections.length : -1,
@@ -882,7 +987,7 @@ test("addSectionMapItem stores readable section map details", async () => {
 test("addReviewSectionItem stores readable files and feedback", async () => {
 	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
 
-	useApp.setState({ chatBySection: {}, streaming: false });
+	clearChatState(useApp);
 
 	useApp.getState().addReviewSectionItem({
 		schema_version: 1,
@@ -910,7 +1015,7 @@ test("addReviewSectionItem stores readable files and feedback", async () => {
 		pause_prompt: "Questions?",
 	});
 
-	const item = prDescriptionChat(useApp.getState())[0]?.item;
+	const item = overviewChat(useApp.getState())[0]?.item;
 	assert.equal(item?.type, "review_section");
 	assert.deepEqual(item?.section.files, ["src/lib.rs", "src/main.rs"]);
 	assert.equal(item?.section.concerns[0]?.text, "Missing empty input check.");
@@ -920,10 +1025,104 @@ test("addReviewSectionItem stores readable files and feedback", async () => {
 	);
 });
 
+test("creating chat tabs appends review-level tabs and switches the active tab", async () => {
+	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
+	await resetReviewState();
+
+	useApp.getState().setSession(prSession);
+
+	const first = useApp.getState().createChatTab();
+	const second = useApp.getState().createChatTab();
+
+	const state = useApp.getState();
+	assert.equal(first.title, "Chat 2");
+	assert.equal(second.title, "Chat 3");
+	assert.deepEqual(
+		state.chatTabs.map((tab: ChatTab) => tab.title),
+		["Overview", "Chat 2", "Chat 3"],
+	);
+	assert.equal(state.activeChatTabId, second.id);
+	assert.equal("sectionId" in first, false);
+});
+
+test("section changes do not change the active chat tab", async () => {
+	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
+	await resetReviewState();
+
+	useApp.getState().setSession(prSession);
+	useApp.getState().setSectionMap([
+		{
+			section_id: "logic",
+			title: "Core logic",
+			intent: "Review behavior changes",
+		},
+	]);
+	const secondTab = useApp.getState().createChatTab();
+
+	useApp.getState().setCurrentSection("logic", "user_click");
+
+	const state = useApp.getState();
+	assert.equal(state.currentSectionId, "logic");
+	assert.equal(state.activeChatTabId, secondTab.id);
+});
+
+test("chat tabs keep independent timelines routed by ACP session", async () => {
+	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
+	await resetReviewState();
+
+	useApp.getState().setSession(prSession);
+
+	const store = useApp.getState();
+	const overviewTabId = store.activeChatTabId!;
+	const secondTab = store.createChatTab();
+
+	store.attachChatTabSession(overviewTabId, "session-overview");
+	store.attachChatTabSession(secondTab.id, "session-chat-b");
+	store.appendAssistantChunk("Default tab reply.", {
+		sessionId: "session-overview",
+		kind: "response",
+	});
+	store.appendAssistantChunk("Second tab reply.", {
+		sessionId: "session-chat-b",
+		kind: "response",
+	});
+
+	const state = useApp.getState();
+	assert.equal(state.chatByTab[overviewTabId][0]?.text, "Default tab reply.");
+	assert.equal(state.chatByTab[secondTab.id][0]?.text, "Second tab reply.");
+	assert.equal(state.chatTabs.length, 2);
+});
+
+test("closing a chat tab removes its session route and keeps another tab active", async () => {
+	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
+	await resetReviewState();
+
+	useApp.getState().setSession(prSession);
+
+	const store = useApp.getState();
+	const firstTabId = store.activeChatTabId;
+	const secondTab = store.createChatTab();
+	store.attachChatTabSession(secondTab.id, "session-chat-b");
+	store.appendAssistantChunk("Second tab reply.", {
+		sessionId: "session-chat-b",
+		kind: "response",
+	});
+
+	const result = store.closeChatTab(secondTab.id);
+
+	const state = useApp.getState();
+	assert.equal(result.closedSessionId, "session-chat-b");
+	assert.equal(state.activeChatTabId, firstTabId);
+	assert.equal(state.chatTabForSession["session-chat-b"], undefined);
+	assert.equal(state.sessionByChatTab[secondTab.id], undefined);
+	assert.equal(state.chatByTab[secondTab.id], undefined);
+	assert.deepEqual(state.chatTabs.map((tab: ChatTab) => tab.id), ["overview"]);
+});
+
 test("tool calls stay inside the active assistant thinking thread", async () => {
 	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
 
-	useApp.setState({ chatBySection: {}, streaming: false });
+	clearChatState(useApp);
 
 	useApp.getState().appendAssistantChunk("I will check");
 	useApp.getState().addToolCallItem({
@@ -934,8 +1133,8 @@ test("tool calls stay inside the active assistant thinking thread", async () => 
 	});
 	useApp.getState().appendAssistantChunk(" and explain.");
 
-	const [message] = prDescriptionChat(useApp.getState()) as ChatMessage[];
-	assert.equal(prDescriptionChat(useApp.getState()).length, 1);
+	const [message] = overviewChat(useApp.getState()) as ChatMessage[];
+	assert.equal(overviewChat(useApp.getState()).length, 1);
 	assert.equal(message?.role, "assistant");
 	assert.equal(message?.text, "I will check and explain.");
 	assert.deepEqual(message?.parts, [
@@ -956,7 +1155,7 @@ test("tool calls stay inside the active assistant thinking thread", async () => 
 test("replayed assistant chunks dedupe after inline tool calls", async () => {
 	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
 
-	useApp.setState({ chatBySection: {}, streaming: false });
+	clearChatState(useApp);
 
 	useApp.getState().appendAssistantChunk("I will check");
 	useApp.getState().addToolCallItem({
@@ -967,7 +1166,7 @@ test("replayed assistant chunks dedupe after inline tool calls", async () => {
 	});
 	useApp.getState().appendAssistantChunk("I will check and explain.");
 
-	const [message] = prDescriptionChat(useApp.getState()) as ChatMessage[];
+	const [message] = overviewChat(useApp.getState()) as ChatMessage[];
 	assert.equal(message?.text, "I will check and explain.");
 	assert.deepEqual(message?.parts, [
 		{ type: "thinking", text: "I will check" },
@@ -987,7 +1186,7 @@ test("replayed assistant chunks dedupe after inline tool calls", async () => {
 test("inline tool call statuses update inside assistant message parts", async () => {
 	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
 
-	useApp.setState({ chatBySection: {}, streaming: false });
+	clearChatState(useApp);
 
 	useApp.getState().appendAssistantChunk("Checking");
 	useApp.getState().addToolCallItem({
@@ -998,7 +1197,7 @@ test("inline tool call statuses update inside assistant message parts", async ()
 	});
 	useApp.getState().updateToolCallItem("tool-1", "completed");
 
-	const [message] = prDescriptionChat(useApp.getState()) as ChatMessage[];
+	const [message] = overviewChat(useApp.getState()) as ChatMessage[];
 	assert.deepEqual(message?.parts?.[1], {
 		type: "tool_call",
 		toolCall: {
@@ -1013,7 +1212,7 @@ test("inline tool call statuses update inside assistant message parts", async ()
 test("appendAssistantChunk hides structured review fences from chat text", async () => {
 	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
 
-	useApp.setState({ chatBySection: {}, streaming: false });
+	clearChatState(useApp);
 
 	useApp.getState().appendAssistantChunk(
 		[
@@ -1026,7 +1225,7 @@ test("appendAssistantChunk hides structured review fences from chat text", async
 	);
 
 	assert.equal(
-		prDescriptionChat(useApp.getState())[0]?.text,
+		overviewChat(useApp.getState())[0]?.text,
 		"Here is the map.\nReady.",
 	);
 });
@@ -1034,7 +1233,7 @@ test("appendAssistantChunk hides structured review fences from chat text", async
 test("appendAssistantChunk hides PR description fences from chat text", async () => {
 	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
 
-	useApp.setState({ chatBySection: {}, streaming: false });
+	clearChatState(useApp);
 
 	useApp.getState().appendAssistantChunk(
 		[
@@ -1047,7 +1246,7 @@ test("appendAssistantChunk hides PR description fences from chat text", async ()
 	);
 
 	assert.equal(
-		prDescriptionChat(useApp.getState())[0]?.text,
+		overviewChat(useApp.getState())[0]?.text,
 		"Preparing the intro.\nReady.",
 	);
 });
@@ -1055,7 +1254,7 @@ test("appendAssistantChunk hides PR description fences from chat text", async ()
 test("structured review fences split around a readable item stay hidden", async () => {
 	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
 
-	useApp.setState({ chatBySection: {}, streaming: false });
+	clearChatState(useApp);
 
 	useApp.getState().appendAssistantChunk(
 		[
@@ -1091,7 +1290,7 @@ test("structured review fences split around a readable item stay hidden", async 
 		].join("\n"),
 	);
 
-	const chat = prDescriptionChat(useApp.getState()) as ChatMessage[];
+	const chat = overviewChat(useApp.getState()) as ChatMessage[];
 	assert.equal(chat.length, 3);
 	assert.equal(chat[0]?.text.trimEnd(), "A focused bug-fix PR.");
 	assert.equal(chat[1]?.item?.type, "section_map");
@@ -1103,7 +1302,7 @@ test("structured review fences split around a readable item stay hidden", async 
 test("processed display-message chunks preserve collapsed thinking and add a response", async () => {
 	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
 
-	useApp.setState({ chatBySection: {}, streaming: false });
+	clearChatState(useApp);
 
 	useApp.getState().appendAssistantChunk("I am checking files...");
 	useApp.getState().addToolCallItem({
@@ -1116,7 +1315,7 @@ test("processed display-message chunks preserve collapsed thinking and add a res
 		replaceStreaming: true,
 	});
 
-	const [message] = prDescriptionChat(useApp.getState()) as ChatMessage[];
+	const [message] = overviewChat(useApp.getState()) as ChatMessage[];
 	assert.equal(message?.text, "The section is clear.");
 	assert.deepEqual(message?.parts, [
 		{ type: "thinking", text: "I am checking files..." },
@@ -1136,14 +1335,14 @@ test("processed display-message chunks preserve collapsed thinking and add a res
 test("agent message chunks render as assistant responses outside thinking", async () => {
 	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
 
-	useApp.setState({ chatBySection: {}, streaming: false });
+	clearChatState(useApp);
 
 	useApp.getState().appendAssistantChunk(
 		"Short answer: yes, but it is probably acceptable for the MVP.",
 		{ kind: "response" },
 	);
 
-	const [message] = prDescriptionChat(useApp.getState()) as ChatMessage[];
+	const [message] = overviewChat(useApp.getState()) as ChatMessage[];
 	assert.equal(
 		message?.text,
 		"Short answer: yes, but it is probably acceptable for the MVP.",
@@ -1159,7 +1358,7 @@ test("agent message chunks render as assistant responses outside thinking", asyn
 test("response chunks remain outside an existing thinking thread", async () => {
 	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
 
-	useApp.setState({ chatBySection: {}, streaming: false });
+	clearChatState(useApp);
 
 	useApp.getState().appendAssistantChunk("I am checking files...");
 	useApp.getState().addToolCallItem({
@@ -1176,7 +1375,7 @@ test("response chunks remain outside an existing thinking thread", async () => {
 		{ kind: "response" },
 	);
 
-	const [message] = prDescriptionChat(useApp.getState()) as ChatMessage[];
+	const [message] = overviewChat(useApp.getState()) as ChatMessage[];
 	assert.equal(
 		message?.text,
 		"Short answer: yes, but it is probably acceptable for the MVP.",

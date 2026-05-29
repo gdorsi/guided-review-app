@@ -26,14 +26,22 @@ test("ChatPanel uses a bottom anchor instead of forcing scrollTop on every updat
 	assert.doesNotMatch(src, /scrollTop\s*=\s*[^;]*scrollHeight/);
 });
 
-test("ChatPanel isolates chat timelines by active section", async () => {
+test("ChatPanel isolates chat timelines by active tab", async () => {
 	const src = await readFile(chatPanelPath, "utf8");
 
-	assert.match(src, /const chat = chatBySection\[activeSectionId\] \?\? \[\]/);
-	assert.match(src, /addUserMessage\(body, targetSectionId\)/);
-	assert.match(src, /startSectionChat/);
-	assert.match(src, /buildSectionChatKickoffPrefix/);
-	assert.match(src, /hasSectionChatSession/);
+	assert.match(src, /const chat = activeTab \? \(chatByTab\[activeTab\.id\] \?\? \[\]\) : \[\]/);
+	assert.match(src, /const tabs = chatTabs/);
+	assert.match(src, /const activeTabId = activeChatTabId \?\? tabs\[0\]\?\.id/);
+	assert.match(src, /addUserMessage\(body, targetTabId\)/);
+	assert.match(src, /startChat/);
+	assert.match(src, /buildReviewChatKickoffPrefix/);
+	assert.match(src, /createChatTab\(\)/);
+	assert.match(src, /closeChatTab\(tabId\)/);
+	assert.doesNotMatch(src, /startSectionChat/);
+	assert.doesNotMatch(src, /buildSectionChatKickoffPrefix/);
+	assert.doesNotMatch(src, /Start a chat for this section/);
+	assert.doesNotMatch(src, /chatTabsBySection/);
+	assert.doesNotMatch(src, /activeChatTabBySection/);
 });
 
 test("ChatPanel renders thinking and display responses with dedicated components", async () => {

@@ -273,15 +273,15 @@ async fn resolve_local_branch_ref(path: &Path, branch: &str) -> Result<String> {
         return Err(anyhow!("branch name is required"));
     }
 
-    if git_commit_exists(path, trimmed).await {
-        return Ok(trimmed.to_string());
-    }
-
-    if !trimmed.contains('/') {
+    if !trimmed.starts_with("origin/") && !trimmed.starts_with("refs/") {
         let remote_ref = format!("origin/{trimmed}");
         if git_commit_exists(path, &remote_ref).await {
             return Ok(remote_ref);
         }
+    }
+
+    if git_commit_exists(path, trimmed).await {
+        return Ok(trimmed.to_string());
     }
 
     Err(anyhow!("branch not found: {trimmed}"))
@@ -1283,6 +1283,57 @@ mod tests {
         assert_eq!(json["head_sha"], feature_sha);
 
         fs::remove_dir_all(repo_path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn prepare_local_branch_prefers_fetched_origin_branch() {
+        let remote_path = temp_repo_path("branch-origin-remote");
+        let local_path = temp_repo_path("branch-origin-local");
+        fs::create_dir_all(&remote_path).unwrap();
+
+        run_git_sync(&remote_path, &["init", "-b", "main"]);
+        run_git_sync(&remote_path, &["config", "user.name", "Guided Review Test"]);
+        run_git_sync(
+            &remote_path,
+            &["config", "user.email", "guided-review-test@example.com"],
+        );
+        write_and_commit(&remote_path, "README.md", "base\n", "base");
+        run_git_sync(&remote_path, &["checkout", "-b", "feature/review"]);
+        write_and_commit(&remote_path, "README.md", "old review\n", "old review");
+        run_git_sync(&remote_path, &["checkout", "main"]);
+
+        run_git_sync(
+            Path::new("."),
+            &[
+                "clone",
+                &remote_path.to_string_lossy(),
+                &local_path.to_string_lossy(),
+            ],
+        );
+        run_git_sync(
+            &local_path,
+            &["checkout", "-b", "feature/review", "origin/feature/review"],
+        );
+
+        run_git_sync(&remote_path, &["checkout", "feature/review"]);
+        write_and_commit(
+            &remote_path,
+            "README.md",
+            "latest review\n",
+            "latest review",
+        );
+        let latest_sha = git_output_sync(&remote_path, &["rev-parse", "feature/review"]);
+        run_git_sync(&remote_path, &["checkout", "main"]);
+
+        let prepared = prepare_local_branch(&local_path, "feature/review")
+            .await
+            .unwrap();
+
+        assert_eq!(prepared.head_ref, "origin/feature/review");
+        assert_eq!(prepared.head_sha, latest_sha);
+
+        fs::remove_dir_all(&remote_path).unwrap();
+        fs::remove_dir_all(&local_path).unwrap();
     }
 
     #[tokio::test]

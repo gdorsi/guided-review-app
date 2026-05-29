@@ -10,10 +10,21 @@ test("ReviewLauncher exposes PR history instead of the saved-review modal", asyn
 	assert.match(src, /listSavedReviewsForRepo/);
 	assert.match(src, /historySourceFromSavedReview/);
 	assert.match(src, /startFreshReview\(res,\s*true\)/);
+	assert.match(src, /align="end"/);
+	assert.match(src, /saved_review_is_stale/);
+	assert.match(src, /Saved review is stale/);
+	assert.match(src, /Saved review matches the current PR head/);
 	assert.doesNotMatch(src, /HistoryStatusBadge/);
 	assert.doesNotMatch(src, /review\.is_stale/);
 	assert.doesNotMatch(src, /Saved review found/);
 	assert.doesNotMatch(src, /pendingSavedStart/);
+});
+
+test("ReviewLauncher renders external status before PR history", async () => {
+	const src = await readFile(reviewLauncherPath, "utf8");
+
+	assert.match(src, /beforeHistory\?: ReactNode/);
+	assert.match(src, /\{beforeHistory\}\s*<DropdownMenu\.Root/);
 });
 
 test("ReviewLauncher exposes Codex effort controls and sends selected effort", async () => {

@@ -33,7 +33,7 @@ pub fn run() {
             update_pr_from_upstream_cmd,
             send_message_cmd,
             start_section_task_cmd,
-            start_section_chat_cmd,
+            start_chat_cmd,
             end_session_cmd,
             get_file_at_ref_cmd,
             get_diff_cmd,
