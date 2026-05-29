@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
 	useApp,
 	type ReviewSectionState,
@@ -46,7 +46,7 @@ import {
 	useDefaultLayout,
 } from "react-resizable-panels";
 import { Button } from "@/components/ui/button";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, Loader2, RefreshCw } from "lucide-react";
 import {
 	recordClientTelemetry,
 	recordClientTelemetryError,
@@ -58,6 +58,12 @@ import {
 	saveReviewRequestFromSession,
 } from "@/lib/reviewPersistence";
 import { findNextSectionToAutoLoad } from "@/lib/sectionQueue";
+import {
+	buildUpstreamChangeHint,
+	changedFilesForSection,
+	findSectionsAffectedByChangedFiles,
+	isPrBackedSession,
+} from "@/lib/prUpdate";
 import { ghCliNeedsInstallPopup, ghCliPopupMessage } from "@/lib/ghCli";
 import {
 	Dialog,
@@ -66,7 +72,6 @@ import {
 	DialogHeader,
 	DialogTitle,
 } from "@/components/ui/dialog";
-import { Badge } from "@/components/ui/badge";
 
 function parseToolSectionMap(raw: unknown): SectionMap | null {
 	return parseSectionMapPayload(raw);
@@ -146,27 +151,6 @@ function targetFromReviewSection(section: ReviewSectionState): SectionTaskTarget
 	};
 }
 
-function SavedReviewFreshnessBadge({
-	isStale,
-}: {
-	isStale: boolean | undefined;
-}) {
-	if (isStale === undefined) return null;
-	return (
-		<Badge
-			variant={isStale ? "medium" : "low"}
-			className="shrink-0"
-			title={
-				isStale
-					? "Saved review is stale because the PR head changed."
-					: "Saved review matches the current PR head."
-			}
-		>
-			{isStale ? "stale" : "current"}
-		</Badge>
-	);
-}
-
 export default function App() {
 	const session = useApp((s) => s.session);
 	const sections = useApp((s) => s.sections);
@@ -189,17 +173,75 @@ export default function App() {
 	const addToolCallItem = useApp((s) => s.addToolCallItem);
 	const updateToolCallItem = useApp((s) => s.updateToolCallItem);
 	const setPrDescriptionBody = useApp((s) => s.setPrDescriptionBody);
+	const refreshSessionMetadata = useApp((s) => s.refreshSessionMetadata);
 	const pushError = useApp((s) => s.pushError);
 	const addCommentDraft = useApp((s) => s.addCommentDraft);
 	const applyCommentResult = useApp((s) => s.applyCommentResult);
 	const pushStderr = useApp((s) => s.pushStderr);
 	const [ghCliStatus, setGhCliStatus] = useState<GhCliStatus | null>(null);
 	const [ghCliDismissed, setGhCliDismissed] = useState(false);
+	const [updatingPr, setUpdatingPr] = useState(false);
+	const [prUpdateStatus, setPrUpdateStatus] = useState<string | null>(null);
 	const { defaultLayout, onLayoutChanged } = useDefaultLayout({
 		id: "guided-review.main-layout",
 		panelIds: ["sections", "diff", "chat"],
 		storage: typeof window === "undefined" ? undefined : window.localStorage,
 	});
+
+	const startSectionTask = useCallback(
+		async (
+			sess: SessionInfo,
+			target: SectionTaskTarget,
+			reason: "auto_open_first" | "auto_load_next" | "upstream_update",
+			additionalConcernsHint?: string,
+		): Promise<boolean> => {
+			startSectionProcessing(target.sectionId);
+			recordClientTelemetry("client.acp.section_task.auto_load_sending", {
+				"acp.session_id": sess.session_id,
+				"section.id": target.sectionId,
+				"section.title": target.title,
+				"section.auto_load_reason": reason,
+			});
+			try {
+				const state = useApp.getState();
+				const publishedCommentContext = formatPublishedCommentsForPrompt(
+					state.session?.session_id === sess.session_id
+						? state.publishedComments
+						: (sess.published_comments ?? []),
+					state.session?.session_id === sess.session_id
+						? (state.publishedCommentsError ?? undefined)
+						: sess.published_comments_error,
+				);
+				await acp.startSectionTask({
+					parent_session_id: sess.session_id,
+					section_id: target.sectionId,
+					title: target.title,
+					intent: target.intent,
+					files: target.files,
+					base_ref: sess.repo.base_ref,
+					head_ref: sess.repo.head_ref,
+					published_comment_context: publishedCommentContext,
+					additional_concerns_hint: additionalConcernsHint,
+				});
+				recordClientTelemetry("client.acp.section_task.auto_load_sent", {
+					"acp.session_id": sess.session_id,
+					"section.id": target.sectionId,
+					"section.auto_load_reason": reason,
+				});
+				return true;
+			} catch (e) {
+				finishSectionProcessing(target.sectionId);
+				recordClientTelemetryError("client.acp.section_task.auto_load_failed", e, {
+					"acp.session_id": sess.session_id,
+					"section.id": target.sectionId,
+					"section.auto_load_reason": reason,
+				});
+				pushError(`section auto-load failed: ${e}`);
+				return false;
+			}
+		},
+		[finishSectionProcessing, pushError, startSectionProcessing],
+	);
 
 	useEffect(() => {
 		let cancelled = false;
@@ -251,60 +293,6 @@ export default function App() {
 		});
 		let cancelled = false;
 		const registered: Unlisten[] = [];
-
-		const startSectionTask = async (
-			sess: SessionInfo,
-			target: SectionTaskTarget,
-			reason: "auto_open_first" | "auto_load_next",
-		): Promise<boolean> => {
-			startSectionProcessing(target.sectionId);
-			recordClientTelemetry("client.acp.section_task.auto_load_sending", {
-				"acp.session_id": sess.session_id,
-				"section.id": target.sectionId,
-				"section.title": target.title,
-				"section.auto_load_reason": reason,
-			});
-			try {
-				const state = useApp.getState();
-				const publishedCommentContext = formatPublishedCommentsForPrompt(
-					state.session?.session_id === sess.session_id
-						? state.publishedComments
-						: (sess.published_comments ?? []),
-					state.session?.session_id === sess.session_id
-						? (state.publishedCommentsError ?? undefined)
-						: sess.published_comments_error,
-				);
-				await acp.startSectionTask({
-					parent_session_id: sess.session_id,
-					section_id: target.sectionId,
-					title: target.title,
-					intent: target.intent,
-					files: target.files,
-					base_ref: sess.repo.base_ref,
-					head_ref: sess.repo.head_ref,
-					published_comment_context: publishedCommentContext,
-				});
-				recordClientTelemetry("client.acp.section_task.auto_load_sent", {
-					"acp.session_id": sess.session_id,
-					"section.id": target.sectionId,
-					"section.auto_load_reason": reason,
-				});
-				return true;
-			} catch (e) {
-				finishSectionProcessing(target.sectionId);
-				recordClientTelemetryError(
-					"client.acp.section_task.auto_load_failed",
-					e,
-					{
-						"acp.session_id": sess.session_id,
-						"section.id": target.sectionId,
-						"section.auto_load_reason": reason,
-					},
-				);
-				pushError(`section auto-load failed: ${e}`);
-				return false;
-			}
-		};
 
 		const startNextSectionAfter = (completedSectionId: string, sessionId: string) => {
 			if (cancelled) return;
@@ -550,6 +538,7 @@ export default function App() {
 			upsertSection,
 			upsertSectionProgress,
 			setCurrentSection,
+			startSectionTask,
 			startSectionProcessing,
 			finishSectionProcessing,
 		appendAssistantChunk,
@@ -564,6 +553,73 @@ export default function App() {
 			applyCommentResult,
 			pushStderr,
 		]);
+
+	async function updatePrFromUpstream() {
+		if (!session || !isPrBackedSession(session) || updatingPr) return;
+		setUpdatingPr(true);
+		setPrUpdateStatus(null);
+		recordClientTelemetry("client.pr_update.started", {
+			"acp.session_id": session.session_id,
+			"repo.previous_head_sha": session.repo.head_sha,
+		});
+		try {
+			const response = await acp.updatePrFromUpstream({
+				source: session.source,
+				previous_repo: session.repo,
+			});
+			refreshSessionMetadata({
+				repo: response.repo,
+				pull_request: response.pull_request,
+				pull_request_error: response.pull_request_error,
+				published_comments: response.published_comments,
+				published_comments_error: response.published_comments_error,
+			});
+			const state = useApp.getState();
+			const affectedSections = findSectionsAffectedByChangedFiles(
+				state.sections,
+				response.changed_files,
+			);
+			if (response.changed_files.length === 0) {
+				setPrUpdateStatus("PR is already up to date.");
+				return;
+			}
+			if (affectedSections.length === 0) {
+				setPrUpdateStatus(
+					"PR updated; no existing sections own the changed files.",
+				);
+				return;
+			}
+			setPrUpdateStatus(
+				`Reprocessing ${affectedSections.length} section${affectedSections.length === 1 ? "" : "s"}.`,
+			);
+			const refreshedSession = useApp.getState().session;
+			if (!refreshedSession) return;
+			for (const section of affectedSections) {
+				const changedFiles = changedFilesForSection(
+					section,
+					response.changed_files,
+				);
+				await startSectionTask(
+					refreshedSession,
+					targetFromReviewSection(section),
+					"upstream_update",
+					buildUpstreamChangeHint(changedFiles),
+				);
+			}
+			recordClientTelemetry("client.pr_update.reprocess_queued", {
+				"acp.session_id": refreshedSession.session_id,
+				"section.count": affectedSections.length,
+				"pr_update.changed_file_count": response.changed_files.length,
+			});
+		} catch (e) {
+			recordClientTelemetryError("client.pr_update.failed", e, {
+				"acp.session_id": session.session_id,
+			});
+			pushError(`PR update failed: ${e}`);
+		} finally {
+			setUpdatingPr(false);
+		}
+	}
 
 	return (
 		<div className="grid h-screen grid-rows-[44px_1fr] bg-background text-foreground">
@@ -595,15 +651,36 @@ export default function App() {
 			</Dialog>
 			<header className="flex items-center gap-3 border-b border-border bg-background px-3">
 				<ProjectPicker />
-				<ReviewLauncher />
-				{session && (
+				<ReviewLauncher
+					beforeHistory={
+						isPrBackedSession(session) && prUpdateStatus ? (
+							<span
+								className="max-w-[240px] truncate text-[11px] text-muted-foreground"
+								title={prUpdateStatus}
+							>
+								{prUpdateStatus}
+							</span>
+						) : null
+					}
+				/>
+				{isPrBackedSession(session) && (
 					<div className="flex min-w-0 items-center gap-2">
-						<SavedReviewFreshnessBadge
-							isStale={session.saved_review_is_stale}
-						/>
-						<span className="truncate font-mono text-[11px] text-muted-foreground">
-							{session.repo.head_ref} ← {session.repo.base_ref}
-						</span>
+						<Button
+							type="button"
+							size="sm"
+							variant="outline"
+							className="h-7 px-2"
+							disabled={updatingPr}
+							onClick={() => void updatePrFromUpstream()}
+							title="Update PR from upstream"
+						>
+							{updatingPr ? (
+								<Loader2 className="size-3.5 animate-spin" />
+							) : (
+								<RefreshCw className="size-3.5" />
+							)}
+							{updatingPr ? "Updating" : "Update"}
+						</Button>
 					</div>
 				)}
 			</header>

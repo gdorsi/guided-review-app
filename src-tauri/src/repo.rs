@@ -4,6 +4,7 @@ use anyhow::{anyhow, Context, Result};
 use git2::{DiffOptions, Repository};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use tokio::process::Command;
@@ -272,18 +273,18 @@ async fn resolve_local_branch_ref(path: &Path, branch: &str) -> Result<String> {
         return Err(anyhow!("branch name is required"));
     }
 
-    if git_commit_exists(path, trimmed).await {
-        return Ok(trimmed.to_string());
+    if !trimmed.starts_with("origin/") && !trimmed.starts_with("refs/") {
+        // Prefer the freshly fetched remote-tracking branch when it exists so
+        // local reviews pick up upstream changes even if a stale local branch
+        // with the same name is checked out.
+        let remote_ref = format!("origin/{trimmed}");
+        if git_commit_exists(path, &remote_ref).await {
+            return Ok(remote_ref);
+        }
     }
 
-    // Fall back to the remote-tracking ref. Branch names routinely contain
-    // slashes (chore/foo, feat/bar), and a freshly fetched branch the user
-    // hasn't checked out exists only as origin/<name>. Always try this: any
-    // input that already resolves (including a literal "origin/main") returned
-    // above, so prepending here is only ever a last resort.
-    let remote_ref = format!("origin/{trimmed}");
-    if git_commit_exists(path, &remote_ref).await {
-        return Ok(remote_ref);
+    if git_commit_exists(path, trimmed).await {
+        return Ok(trimmed.to_string());
     }
 
     Err(anyhow!("branch not found: {trimmed}"))
@@ -753,6 +754,30 @@ pub fn get_diff(
     Ok(out.into_inner())
 }
 
+fn diff_patch_map(patches: Vec<DiffPatch>) -> BTreeMap<String, String> {
+    patches
+        .into_iter()
+        .map(|patch| (patch.file_path, patch.patch))
+        .collect()
+}
+
+pub fn changed_diff_files(
+    repo_path: &Path,
+    old_base_ref: &str,
+    old_head_ref: &str,
+    new_base_ref: &str,
+    new_head_ref: &str,
+) -> Result<Vec<String>> {
+    let old = diff_patch_map(get_diff(repo_path, old_base_ref, old_head_ref, None)?);
+    let new = diff_patch_map(get_diff(repo_path, new_base_ref, new_head_ref, None)?);
+    let paths: BTreeSet<String> = old.keys().chain(new.keys()).cloned().collect();
+
+    Ok(paths
+        .into_iter()
+        .filter(|path| old.get(path) != new.get(path))
+        .collect())
+}
+
 #[derive(Debug, Clone)]
 struct ChangedLineRun {
     origin: char,
@@ -1035,6 +1060,43 @@ mod tests {
     }
 
     #[test]
+    fn changed_diff_files_reports_added_removed_and_patch_changed_files() {
+        let repo_path = init_changed_range_repo("changed-diff-files");
+        write_and_commit(&repo_path, "src/keep.ts", "keep\n", "base keep");
+        write_and_commit(&repo_path, "src/edit.ts", "old\n", "base edit");
+        write_and_commit(&repo_path, "src/remove.ts", "remove\n", "base remove");
+        let base = git_output_sync(&repo_path, &["rev-parse", "HEAD"]);
+
+        fs::remove_file(repo_path.join("src/remove.ts")).unwrap();
+        run_git_sync(&repo_path, &["add", "src/remove.ts"]);
+        write_and_commit(&repo_path, "src/edit.ts", "old pr\n", "old pr edit");
+        let old_head = git_output_sync(&repo_path, &["rev-parse", "HEAD"]);
+
+        write_and_commit(&repo_path, "src/edit.ts", "new pr\n", "new pr edit");
+        write_and_commit(&repo_path, "src/add.ts", "add\n", "new pr add");
+        write_and_commit(
+            &repo_path,
+            "src/remove.ts",
+            "remove\n",
+            "new pr restore remove",
+        );
+        let new_head = git_output_sync(&repo_path, &["rev-parse", "HEAD"]);
+
+        let changed = changed_diff_files(&repo_path, &base, &old_head, &base, &new_head).unwrap();
+
+        assert_eq!(
+            changed,
+            vec![
+                "src/add.ts".to_string(),
+                "src/edit.ts".to_string(),
+                "src/remove.ts".to_string(),
+            ]
+        );
+
+        fs::remove_dir_all(repo_path).unwrap();
+    }
+
+    #[test]
     fn parse_github_repo_url_accepts_common_github_formats() {
         let cases = [
             "https://github.com/openai/codex",
@@ -1226,6 +1288,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn prepare_local_branch_prefers_fetched_origin_branch() {
+        let remote_path = temp_repo_path("branch-origin-remote");
+        let local_path = temp_repo_path("branch-origin-local");
+        fs::create_dir_all(&remote_path).unwrap();
+
+        run_git_sync(&remote_path, &["init", "-b", "main"]);
+        run_git_sync(&remote_path, &["config", "user.name", "Guided Review Test"]);
+        run_git_sync(
+            &remote_path,
+            &["config", "user.email", "guided-review-test@example.com"],
+        );
+        write_and_commit(&remote_path, "README.md", "base\n", "base");
+        run_git_sync(&remote_path, &["checkout", "-b", "feature/review"]);
+        write_and_commit(&remote_path, "README.md", "old review\n", "old review");
+        run_git_sync(&remote_path, &["checkout", "main"]);
+
+        run_git_sync(
+            Path::new("."),
+            &[
+                "clone",
+                &remote_path.to_string_lossy(),
+                &local_path.to_string_lossy(),
+            ],
+        );
+        run_git_sync(
+            &local_path,
+            &["checkout", "-b", "feature/review", "origin/feature/review"],
+        );
+
+        run_git_sync(&remote_path, &["checkout", "feature/review"]);
+        write_and_commit(
+            &remote_path,
+            "README.md",
+            "latest review\n",
+            "latest review",
+        );
+        let latest_sha = git_output_sync(&remote_path, &["rev-parse", "feature/review"]);
+        run_git_sync(&remote_path, &["checkout", "main"]);
+
+        let prepared = prepare_local_branch(&local_path, "feature/review")
+            .await
+            .unwrap();
+
+        assert_eq!(prepared.head_ref, "origin/feature/review");
+        assert_eq!(prepared.head_sha, latest_sha);
+
+        fs::remove_dir_all(&remote_path).unwrap();
+        fs::remove_dir_all(&local_path).unwrap();
+    }
+
+    #[tokio::test]
     async fn prepare_local_branch_resolves_remote_only_slash_branch() {
         let remote_path = temp_repo_path("slash-branch-remote");
         let local_path = temp_repo_path("slash-branch-local");
@@ -1239,7 +1352,10 @@ mod tests {
         );
         write_and_commit(&remote_path, "README.md", "base\n", "base");
 
-        run_git_sync(&remote_path, &["checkout", "-b", "chore/remove-peer-secret"]);
+        run_git_sync(
+            &remote_path,
+            &["checkout", "-b", "chore/remove-peer-secret"],
+        );
         write_and_commit(&remote_path, "README.md", "chore\n", "chore change");
         let branch_sha = git_output_sync(&remote_path, &["rev-parse", "chore/remove-peer-secret"]);
         run_git_sync(&remote_path, &["checkout", "main"]);

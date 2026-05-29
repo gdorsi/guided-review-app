@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-	PR_DESCRIPTION_SECTION_ID,
+	OVERVIEW_CHAT_TAB_ID,
 	useApp,
-	type ReviewSectionState,
+	type ChatTab,
 } from "@/lib/store";
 import { acp } from "@/lib/acp";
 import { Textarea } from "@/components/ui/textarea";
@@ -19,7 +19,9 @@ import {
 	Map,
 	Maximize2,
 	MessageSquareText,
+	Plus,
 	Wrench,
+	X,
 } from "lucide-react";
 import { recordClientTelemetry, recordClientTelemetryError } from "@/lib/telemetry";
 import { createDiffFocusRange } from "@/lib/diffFocus";
@@ -27,7 +29,7 @@ import {
 	buildUserMessageWithReviewContext,
 	createReviewSnapshot,
 } from "@/lib/reviewPersistence";
-import { buildSectionChatKickoffPrefix } from "@/lib/sectionKickoff";
+import { buildReviewChatKickoffPrefix } from "@/lib/reviewChatKickoff";
 import {
 	type AssistantBlock,
 	type ThinkingBlockPart,
@@ -310,9 +312,84 @@ function AssistantResponseView({
 	);
 }
 
+function ChatTabs({
+	tabs,
+	activeTabId,
+	canCreate,
+	onSelect,
+	onCreate,
+	onClose,
+}: {
+	tabs: ChatTab[];
+	activeTabId: string | undefined;
+	canCreate: boolean;
+	onSelect: (tabId: string) => void;
+	onCreate: () => void;
+	onClose: (tabId: string) => void;
+}) {
+	if (tabs.length === 0) return null;
+	return (
+		<div className="flex min-h-10 items-center gap-1 overflow-x-auto border-b border-border bg-background/40 px-2 py-1.5">
+			{tabs.map((tab) => {
+				const active = tab.id === activeTabId;
+				return (
+					<div
+						key={tab.id}
+						className={cn(
+							"flex h-7 max-w-36 shrink-0 items-center overflow-hidden rounded-md border text-xs transition-colors",
+							active
+								? "border-primary/35 bg-primary/10 text-foreground"
+								: "border-transparent text-muted-foreground hover:bg-accent",
+						)}
+					>
+						<button
+							type="button"
+							onClick={() => onSelect(tab.id)}
+							className="min-w-0 flex-1 truncate px-2 text-left"
+							title={tab.title}
+						>
+							{tab.title}
+						</button>
+						{canCreate && tab.id !== OVERVIEW_CHAT_TAB_ID && (
+							<button
+								type="button"
+								onClick={(e) => {
+									e.stopPropagation();
+									onClose(tab.id);
+								}}
+								className="grid h-7 w-6 shrink-0 place-items-center text-muted-foreground hover:text-foreground"
+								title={`Close ${tab.title}`}
+								aria-label={`Close ${tab.title}`}
+							>
+								<X className="size-3" />
+							</button>
+						)}
+					</div>
+				);
+			})}
+			{canCreate && (
+				<Button
+					type="button"
+					size="icon"
+					variant="ghost"
+					className="h-7 w-7 shrink-0"
+					onClick={onCreate}
+					title="New chat tab"
+					aria-label="New chat tab"
+				>
+					<Plus className="size-3.5" />
+				</Button>
+			)}
+		</div>
+	);
+}
+
 export function ChatPanel() {
 	const session = useApp((s) => s.session);
-	const chatBySection = useApp((s) => s.chatBySection);
+	const chatTabs = useApp((s) => s.chatTabs);
+	const activeChatTabId = useApp((s) => s.activeChatTabId);
+	const chatByTab = useApp((s) => s.chatByTab);
+	const sessionByChatTab = useApp((s) => s.sessionByChatTab);
 	const drafts = useApp((s) => s.commentDrafts);
 	const streaming = useApp((s) => s.streaming);
 	const sections = useApp((s) => s.sections);
@@ -320,18 +397,19 @@ export function ChatPanel() {
 	const processingSectionIds = useApp((s) => s.processingSectionIds);
 	const publishedComments = useApp((s) => s.publishedComments);
 	const publishedCommentsError = useApp((s) => s.publishedCommentsError);
-	const sessionBySection = useApp((s) => s.sessionBySection);
 	const addUserMessage = useApp((s) => s.addUserMessage);
-	const attachSectionChatSession = useApp((s) => s.attachSectionChatSession);
-	const touchSectionChatSession = useApp((s) => s.touchSectionChatSession);
-	const detachSectionChatSession = useApp((s) => s.detachSectionChatSession);
+	const createChatTab = useApp((s) => s.createChatTab);
+	const setActiveChatTab = useApp((s) => s.setActiveChatTab);
+	const closeChatTab = useApp((s) => s.closeChatTab);
+	const attachChatTabSession = useApp((s) => s.attachChatTabSession);
+	const detachChatTabSession = useApp((s) => s.detachChatTabSession);
 	const pushError = useApp((s) => s.pushError);
 
-	const activeSectionId = currentSectionId ?? PR_DESCRIPTION_SECTION_ID;
-	const chat = chatBySection[activeSectionId] ?? [];
-	const currentSection = sections.find((s) => s.id === activeSectionId);
-	const isPrDescription = activeSectionId === PR_DESCRIPTION_SECTION_ID;
-	const hasSectionChatSession = !!sessionBySection[activeSectionId];
+	const tabs = chatTabs;
+	const activeTabId = activeChatTabId ?? tabs[0]?.id;
+	const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? tabs[0];
+	const chat = activeTab ? (chatByTab[activeTab.id] ?? []) : [];
+	const canCreateTabs = !!session;
 
 	const [input, setInput] = useState("");
 	const [fullPageBlocks, setFullPageBlocks] = useState<AssistantBlock[] | null>(
@@ -361,100 +439,86 @@ export function ChatPanel() {
 
 	async function send() {
 		if (!session) return;
+		if (!activeTab) return;
 		const text = input.trim();
 		if (!text) return;
 		const body = text;
-		const targetSectionId = activeSectionId;
+		const targetTabId = activeTab.id;
 
 		setInput("");
-		addUserMessage(body, targetSectionId);
+		addUserMessage(body, targetTabId);
 
 		try {
-			if (targetSectionId === PR_DESCRIPTION_SECTION_ID) {
-				const snapshot = createReviewSnapshot({
-					current_section_id: currentSectionId,
-					sections,
-					comment_drafts: drafts,
-					published_comments: publishedComments,
-					published_comments_error: publishedCommentsError,
-				});
-				const messageToAgent = buildUserMessageWithReviewContext({
-					userText: body,
-					session,
-					snapshot,
-				});
+			const snapshot = createReviewSnapshot({
+				current_section_id: currentSectionId,
+				sections,
+				comment_drafts: drafts,
+				published_comments: publishedComments,
+				published_comments_error: publishedCommentsError,
+			});
+			const userMessageWithContext = buildUserMessageWithReviewContext({
+				userText: body,
+				session,
+				snapshot,
+			});
+
+			if (targetTabId === OVERVIEW_CHAT_TAB_ID) {
 				recordClientTelemetry("client.chat.send.requested", {
 					"acp.session_id": session.session_id,
-					"section.id": targetSectionId,
+					"section.id": currentSectionId,
+					"chat.tab_id": targetTabId,
 					"message.length": body.length,
 				});
-				await acp.sendMessage(session.session_id, messageToAgent, {
+				await acp.sendMessage(session.session_id, userMessageWithContext, {
 					origin: "chat_panel_user_send",
 					reason: "user_reply",
-					sectionId: targetSectionId,
+					sectionId: currentSectionId ?? undefined,
 					suppressPreview: true,
 				});
 				recordClientTelemetry("client.chat.send.succeeded", {
 					"acp.session_id": session.session_id,
-					"section.id": targetSectionId,
+					"section.id": currentSectionId,
+					"chat.tab_id": targetTabId,
 					"message.length": body.length,
 				});
 				return;
 			}
 
-			let sessionId = sessionBySection[targetSectionId];
-			let messageToAgent = body;
-			const targetSection = sections.find((s) => s.id === targetSectionId);
-			const reviewSection: ReviewSectionState | undefined =
-				targetSection?.kind === "review_section" ? targetSection : undefined;
+			let sessionId = sessionByChatTab[targetTabId];
+			let messageToAgent = userMessageWithContext;
+			let spawnedThisTurn = false;
 
 			if (!sessionId) {
-				if (!reviewSection) {
-					pushError("Cannot start a chat for an unknown section.");
-					return;
-				}
-				recordClientTelemetry("client.chat.section_session.spawning", {
+				recordClientTelemetry("client.chat.session.spawning", {
 					"acp.parent_session_id": session.session_id,
-					"section.id": targetSectionId,
+					"section.id": currentSectionId,
+					"chat.tab_id": targetTabId,
 				});
-				const spawned = await acp.startSectionChat({
+				const spawned = await acp.startChat({
 					parent_session_id: session.session_id,
-					section_id: targetSectionId,
 				});
 				sessionId = spawned.session_id;
-				const { evictedSessionId } = attachSectionChatSession(
-					targetSectionId,
-					sessionId,
-				);
-				if (evictedSessionId) {
-					void acp.endSession(evictedSessionId).catch((e) => {
-						recordClientTelemetryError(
-							"client.chat.section_session.evict_failed",
-							e,
-							{ "acp.session_id": evictedSessionId },
-						);
-					});
-				}
-				const kickoffPrefix = buildSectionChatKickoffPrefix({
+				spawnedThisTurn = true;
+				attachChatTabSession(targetTabId, sessionId);
+				const kickoffPrefix = buildReviewChatKickoffPrefix({
 					session,
-					section: reviewSection,
+					snapshot,
 					publishedComments,
 					publishedCommentsError,
 				});
-				messageToAgent = `${kickoffPrefix}\n\n---\n\nUser message:\n${body}`;
-				recordClientTelemetry("client.chat.section_session.spawned", {
+				messageToAgent = `${kickoffPrefix}\n\n---\n\n${userMessageWithContext}`;
+				recordClientTelemetry("client.chat.session.spawned", {
 					"acp.parent_session_id": session.session_id,
 					"acp.session_id": sessionId,
-					"section.id": targetSectionId,
-					"section.evicted_session_id": evictedSessionId,
+					"section.id": currentSectionId,
+					"chat.tab_id": targetTabId,
 				});
-			} else {
-				touchSectionChatSession(targetSectionId);
 			}
 
 			recordClientTelemetry("client.chat.send.requested", {
 				"acp.session_id": sessionId,
-				"section.id": targetSectionId,
+				"section.id": currentSectionId,
+				"chat.tab_id": targetTabId,
 				"message.length": body.length,
 			});
 
@@ -462,25 +526,45 @@ export function ChatPanel() {
 				await acp.sendMessage(sessionId, messageToAgent, {
 					origin: "chat_panel_user_send",
 					reason: "user_reply",
-					sectionId: targetSectionId,
+					sectionId: currentSectionId ?? undefined,
 					suppressPreview: true,
 				});
 				recordClientTelemetry("client.chat.send.succeeded", {
 					"acp.session_id": sessionId,
-					"section.id": targetSectionId,
+					"section.id": currentSectionId,
+					"chat.tab_id": targetTabId,
 					"message.length": body.length,
 				});
 			} catch (e) {
-				detachSectionChatSession(targetSectionId);
+				if (spawnedThisTurn) detachChatTabSession(targetTabId);
 				throw e;
 			}
 		} catch (e) {
 			recordClientTelemetryError("client.chat.send.failed", e, {
 				"acp.session_id": session.session_id,
-				"section.id": targetSectionId,
+				"section.id": currentSectionId,
+				"chat.tab_id": targetTabId,
 				"message.length": body.length,
 			});
 			pushError(`send_message failed: ${e}`);
+		}
+	}
+
+	function createTab() {
+		if (!canCreateTabs) return;
+		createChatTab();
+		requestAnimationFrame(() => textareaRef.current?.focus());
+	}
+
+	function closeTab(tabId: string) {
+		const { closedSessionId } = closeChatTab(tabId);
+		if (closedSessionId) {
+			void acp.endSession(closedSessionId).catch((e) => {
+				recordClientTelemetryError("client.chat.tab.close_session_failed", e, {
+					"acp.session_id": closedSessionId,
+					"chat.tab_id": tabId,
+				});
+			});
 		}
 	}
 
@@ -534,119 +618,118 @@ export function ChatPanel() {
 			</Dialog>
 			<div className="flex items-center justify-between border-b border-border px-4 py-3 text-sm font-semibold text-muted-foreground">
 				<span>Chat</span>
-				{currentSection && !isPrDescription && (
-					<span
-						className="truncate text-[10px] font-normal uppercase tracking-wider text-muted-foreground/80"
-						title={currentSection.title}
-					>
-						{currentSection.title}
-					</span>
-				)}
 			</div>
+			<ChatTabs
+				tabs={tabs}
+				activeTabId={activeTab?.id}
+				canCreate={canCreateTabs}
+				onSelect={(tabId) => setActiveChatTab(tabId)}
+				onCreate={createTab}
+				onClose={closeTab}
+			/>
 			<div
 				ref={scrollerRef}
 				onScroll={handleChatScroll}
 				className="flex-1 space-y-3 overflow-y-auto px-4 py-4"
 			>
-						{chat.map((m) => {
-							if (m.item) {
-								return (
-									<div key={m.id} className="chat-scroll-item space-y-1">
-										<div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-											{m.role}
-										</div>
-										<ChatItemView item={m.item} />
-									</div>
-								);
-							}
-							if (m.role === "user") {
-								if (!m.text.trim()) return null;
-								return (
-									<div key={m.id} className="chat-scroll-item space-y-1">
-										<div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-											{m.role}
-										</div>
-										<div
-											className={cn(
-												"whitespace-pre-wrap break-words rounded-md px-3 py-2 text-sm leading-relaxed",
-												"bg-primary/15 text-foreground",
-											)}
-										>
-											{m.text}
-											{m.streaming && (
-												<span className="ml-0.5 animate-pulse">▋</span>
-											)}
-										</div>
-									</div>
-								);
-							}
-							const blocks = assistantPartsToBlocks(partsFromMessage(m));
-							if (blocks.length === 0 && !m.streaming) return null;
-							return (
-								<div key={m.id} className="chat-scroll-item space-y-1">
-									<div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-										{m.role}
-									</div>
-									<AssistantResponseView
-										message={m}
-										blocks={blocks}
-										onOpenFullPage={setFullPageBlocks}
-									/>
+				{chat.map((m) => {
+					if (m.item) {
+						return (
+							<div key={m.id} className="chat-scroll-item space-y-1">
+								<div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+									{m.role}
 								</div>
-							);
-						})}
-						{streaming &&
-							(chat.length === 0 || chat[chat.length - 1].role === "user") && (
-								<div className="chat-scroll-item flex items-center gap-1.5 self-start rounded-md border border-border bg-card px-3 py-2 text-xs text-muted-foreground">
-									<span className="block h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/60 [animation-delay:0ms]" />
-									<span className="block h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/60 [animation-delay:150ms]" />
-									<span className="block h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/60 [animation-delay:300ms]" />
-									<span className="ml-1">agent thinking…</span>
+								<ChatItemView item={m.item} />
+							</div>
+						);
+					}
+					if (m.role === "user") {
+						if (!m.text.trim()) return null;
+						return (
+							<div
+								key={m.id}
+								className="chat-scroll-item space-y-1"
+							>
+								<div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+									{m.role}
 								</div>
-							)}
-						<div
-							ref={bottomAnchorRef}
-							className="chat-scroll-anchor !mt-0"
-							aria-hidden="true"
-						/>
+								<div
+									className={cn(
+										"whitespace-pre-wrap break-words rounded-md px-3 py-2 text-sm leading-relaxed",
+										"bg-primary/15 text-foreground",
+									)}
+								>
+									{m.text}
+									{m.streaming && (
+										<span className="ml-0.5 animate-pulse">▋</span>
+									)}
+								</div>
+							</div>
+						);
+					}
+					const blocks = assistantPartsToBlocks(partsFromMessage(m));
+					if (blocks.length === 0 && !m.streaming) return null;
+					return (
+						<div key={m.id} className="chat-scroll-item space-y-1">
+							<div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+								{m.role}
+							</div>
+							<AssistantResponseView
+								message={m}
+								blocks={blocks}
+								onOpenFullPage={setFullPageBlocks}
+							/>
+						</div>
+					);
+				})}
+				{streaming &&
+					(chat.length === 0 || chat[chat.length - 1].role === "user") && (
+						<div className="chat-scroll-item flex items-center gap-1.5 self-start rounded-md border border-border bg-card px-3 py-2 text-xs text-muted-foreground">
+							<span className="block h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/60 [animation-delay:0ms]" />
+							<span className="block h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/60 [animation-delay:150ms]" />
+							<span className="block h-1.5 w-1.5 animate-bounce rounded-full bg-muted-foreground/60 [animation-delay:300ms]" />
+							<span className="ml-1">agent thinking…</span>
+						</div>
+					)}
+				<div
+					ref={bottomAnchorRef}
+					className="chat-scroll-anchor !mt-0"
+					aria-hidden="true"
+				/>
 			</div>
 			<div className="space-y-2 border-t border-border bg-background/40 p-3">
-						{processingSectionIds.length > 0 && (
-							<div className="flex items-center gap-2 rounded-md border border-primary/30 bg-primary/10 px-3 py-2 text-xs font-medium text-primary">
-								<LoaderCircle className="size-3.5 animate-spin" />
-								<span>
-									{processingSectionIds.length === 1
-										? `Agent is processing ${processingSection ? `“${processingSection.title}”` : "this section"}…`
-										: `Agent is processing ${processingSectionIds.length} sections…`}
-								</span>
-							</div>
-						)}
-						<Textarea
-							ref={textareaRef}
-							value={input}
-							onChange={(e) => setInput(e.target.value)}
-							onKeyDown={onKeyDown}
-							placeholder={
+				{processingSectionIds.length > 0 && (
+					<div className="flex items-center gap-2 rounded-md border border-primary/30 bg-primary/10 px-3 py-2 text-xs font-medium text-primary">
+						<LoaderCircle className="size-3.5 animate-spin" />
+						<span>
+							{processingSectionIds.length === 1
+								? `Agent is processing ${processingSection ? `“${processingSection.title}”` : "this section"}…`
+								: `Agent is processing ${processingSectionIds.length} sections…`}
+						</span>
+					</div>
+				)}
+				<Textarea
+					ref={textareaRef}
+					value={input}
+					onChange={(e) => setInput(e.target.value)}
+					onKeyDown={onKeyDown}
+					placeholder={
 						session
-							? isPrDescription
-								? "Ask about the PR description…  (Enter to send · ⌘+Enter for newline)"
-								: hasSectionChatSession
-									? "Reply to the agent…  (Enter to send · ⌘+Enter for newline)"
-									: "Start a chat for this section…  (Enter to send · ⌘+Enter for newline)"
+							? "Ask about this review…  (Enter to send · ⌘+Enter for newline)"
 							: "Start a session first"
 					}
-							disabled={!session}
-							rows={3}
-						/>
-						<div className="flex items-center justify-end gap-2">
-							<Button
-								size="sm"
-								onClick={send}
-								disabled={!session || !input.trim()}
-							>
-								Send
-							</Button>
-						</div>
+					disabled={!session || !activeTab}
+					rows={3}
+				/>
+				<div className="flex items-center justify-end gap-2">
+					<Button
+						size="sm"
+						onClick={send}
+						disabled={!session || !activeTab || !input.trim()}
+					>
+						Send
+					</Button>
+				</div>
 			</div>
 		</aside>
 	);
