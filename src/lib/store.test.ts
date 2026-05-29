@@ -1373,6 +1373,26 @@ test("upsertSection keeps the Review Summary pinned last", async () => {
 	assert.equal(sections.filter((s: SectionState) => s.kind === "review_summary").length, 1);
 });
 
+test("upsertSectionProgress keeps the Review Summary pinned last", async () => {
+	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
+	await resetReviewState();
+	useApp.getState().setSession(prSession);
+	useApp.getState().setSectionMap([
+		{ section_id: "api", title: "API", intent: "x", files: ["a.ts"] },
+	]);
+
+	useApp.getState().upsertSectionProgress({
+		section_id: "progress-late",
+		phase: "started",
+		title: "Progress late",
+		intent: "z",
+	});
+
+	const sections = useApp.getState().sections;
+	assert.equal(sections[sections.length - 1]?.kind, "review_summary");
+	assert.equal(sections.filter((s: SectionState) => s.kind === "review_summary").length, 1);
+});
+
 test("restoreSavedReview pins one summary last and maps legacy approved drafts", async () => {
 	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
 	await resetReviewState();
