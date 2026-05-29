@@ -30,6 +30,7 @@ pub fn run() {
             agent_skill_cmd,
             check_gh_cli_cmd,
             start_session_cmd,
+            update_pr_from_upstream_cmd,
             send_message_cmd,
             start_section_task_cmd,
             start_section_chat_cmd,
