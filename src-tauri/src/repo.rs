@@ -4,6 +4,7 @@ use anyhow::{anyhow, Context, Result};
 use git2::{DiffOptions, Repository};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use tokio::process::Command;
@@ -750,6 +751,30 @@ pub fn get_diff(
     Ok(out.into_inner())
 }
 
+fn diff_patch_map(patches: Vec<DiffPatch>) -> BTreeMap<String, String> {
+    patches
+        .into_iter()
+        .map(|patch| (patch.file_path, patch.patch))
+        .collect()
+}
+
+pub fn changed_diff_files(
+    repo_path: &Path,
+    old_base_ref: &str,
+    old_head_ref: &str,
+    new_base_ref: &str,
+    new_head_ref: &str,
+) -> Result<Vec<String>> {
+    let old = diff_patch_map(get_diff(repo_path, old_base_ref, old_head_ref, None)?);
+    let new = diff_patch_map(get_diff(repo_path, new_base_ref, new_head_ref, None)?);
+    let paths: BTreeSet<String> = old.keys().chain(new.keys()).cloned().collect();
+
+    Ok(paths
+        .into_iter()
+        .filter(|path| old.get(path) != new.get(path))
+        .collect())
+}
+
 #[derive(Debug, Clone)]
 struct ChangedLineRun {
     origin: char,
@@ -1027,6 +1052,44 @@ mod tests {
 
         assert!(ranges.iter().all(|range| range.file_path == "src/a.ts"));
         assert_eq!(ranges.len(), 2);
+
+        fs::remove_dir_all(repo_path).unwrap();
+    }
+
+    #[test]
+    fn changed_diff_files_reports_added_removed_and_patch_changed_files() {
+        let repo_path = init_changed_range_repo("changed-diff-files");
+        write_and_commit(&repo_path, "src/keep.ts", "keep\n", "base keep");
+        write_and_commit(&repo_path, "src/edit.ts", "old\n", "base edit");
+        write_and_commit(&repo_path, "src/remove.ts", "remove\n", "base remove");
+        let base = git_output_sync(&repo_path, &["rev-parse", "HEAD"]);
+
+        fs::remove_file(repo_path.join("src/remove.ts")).unwrap();
+        run_git_sync(&repo_path, &["add", "src/remove.ts"]);
+        write_and_commit(&repo_path, "src/edit.ts", "old pr\n", "old pr edit");
+        let old_head = git_output_sync(&repo_path, &["rev-parse", "HEAD"]);
+
+        write_and_commit(&repo_path, "src/edit.ts", "new pr\n", "new pr edit");
+        write_and_commit(&repo_path, "src/add.ts", "add\n", "new pr add");
+        write_and_commit(
+            &repo_path,
+            "src/remove.ts",
+            "remove\n",
+            "new pr restore remove",
+        );
+        let new_head = git_output_sync(&repo_path, &["rev-parse", "HEAD"]);
+
+        let changed =
+            changed_diff_files(&repo_path, &base, &old_head, &base, &new_head).unwrap();
+
+        assert_eq!(
+            changed,
+            vec![
+                "src/add.ts".to_string(),
+                "src/edit.ts".to_string(),
+                "src/remove.ts".to_string(),
+            ]
+        );
 
         fs::remove_dir_all(repo_path).unwrap();
     }
