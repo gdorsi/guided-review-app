@@ -2,7 +2,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
 	CommentDraft,
+	CommentKind,
 	CommentResult,
+	CommentSide,
 	LineRange,
 	ReviewSection,
 	SectionMap,
@@ -521,6 +523,20 @@ export const acp = {
 		head_ref: string;
 		file_paths: string[];
 	}) => invokeWithTelemetry<LineRange[]>("get_changed_ranges_cmd", { args }),
+	writeReviewMd: (args: {
+		repo_path: string;
+		base_ref: string;
+		head_ref: string;
+		pr_title?: string | null;
+		comments: {
+			kind: CommentKind;
+			title?: string;
+			body: string;
+			file_path?: string;
+			line?: number;
+			side?: CommentSide;
+		}[];
+	}) => invokeWithTelemetry<string>("write_review_md_cmd", { args }),
 };
 
 export type EventName =
