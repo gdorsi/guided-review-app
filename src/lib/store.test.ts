@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import type { ChatMessage } from "./types/section";
 import type { LocalProject } from "./projectSource";
-import type { SectionState } from "./store";
+import type { CommentDraftState, SectionState } from "./store";
 
 const storage = new Map<string, string>();
 
@@ -171,7 +171,7 @@ test("setSectionMap keeps PR description first and appends agent sections", asyn
 		useApp
 			.getState()
 			.sections.map((section: SectionState) => section.id),
-		["pr-description", "overview", "tests"],
+		["pr-description", "overview", "tests", "review-summary"],
 	);
 	assert.equal(useApp.getState().sections[0]?.kind, "pr_description");
 	assert.equal(useApp.getState().currentSectionId, "pr-description");
@@ -1329,6 +1329,89 @@ test("applyCommentResult updates failed drafts in place with error status", asyn
 	assert.equal(draft?.status, "error");
 	assert.equal(draft?.error, "GitHub rejected the comment.");
 	assert.equal(draft?.url, undefined);
+});
+
+test("setSectionMap appends Review Summary as the last section", async () => {
+	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
+	await resetReviewState();
+	useApp.getState().setSession(prSession);
+
+	useApp.getState().setSectionMap([
+		{ section_id: "api", title: "API", intent: "x", files: ["a.ts"] },
+	]);
+
+	const sections = useApp.getState().sections;
+	const last = sections[sections.length - 1];
+	assert.equal(last?.kind, "review_summary");
+	assert.equal(last?.id, "review-summary");
+	assert.equal(sections.filter((s: SectionState) => s.kind === "review_summary").length, 1);
+});
+
+test("upsertSection keeps the Review Summary pinned last", async () => {
+	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
+	await resetReviewState();
+	useApp.getState().setSession(prSession);
+	useApp.getState().setSectionMap([
+		{ section_id: "api", title: "API", intent: "x", files: ["a.ts"] },
+	]);
+
+	useApp.getState().upsertSection({
+		schema_version: 1,
+		section_id: "added-late",
+		title: "Late",
+		intent: "y",
+		files: [],
+		ranges: [],
+		concerns: [],
+		base_ref: "origin/main",
+		head_ref: "head",
+		pause_prompt: "",
+	});
+
+	const sections = useApp.getState().sections;
+	assert.equal(sections[sections.length - 1]?.kind, "review_summary");
+	assert.equal(sections.filter((s: SectionState) => s.kind === "review_summary").length, 1);
+});
+
+test("restoreSavedReview pins one summary last and maps legacy approved drafts", async () => {
+	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
+	await resetReviewState();
+
+	useApp.getState().restoreSavedReview(prSession, {
+		current_section_id: "api",
+		sections: [
+			{
+				id: "review-summary",
+				kind: "review_summary",
+				title: "Review Summary",
+				intent: "",
+				status: "in_review",
+			},
+			{
+				id: "api",
+				kind: "review_section",
+				title: "API",
+				intent: "x",
+				status: "in_review",
+			},
+		],
+		comment_drafts: [
+			{
+				id: "legacy",
+				status: "approved",
+				draft: { kind: "top_level", body: "old" },
+			} as CommentDraftState,
+		],
+		published_comments: [],
+		published_comments_error: null,
+	});
+
+	const sections = useApp.getState().sections;
+	assert.equal(sections[sections.length - 1]?.kind, "review_summary");
+	assert.equal(sections.filter((s: SectionState) => s.kind === "review_summary").length, 1);
+	const [draft] = useApp.getState().commentDrafts;
+	assert.equal(draft?.marked, true);
+	assert.equal(draft?.status, "pending");
 });
 
 test("store does not keep diff file collapse state", async () => {
