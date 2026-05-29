@@ -1269,13 +1269,14 @@ test("editCommentDraftBody updates a draft body without changing its status", as
 	]);
 });
 
-test("applyCommentResult removes published drafts", async () => {
+test("applyCommentResult updates published drafts in place", async () => {
 	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
 
 	useApp.setState({
 		commentDrafts: [
 			{
 				id: "draft-123",
+				marked: false,
 				status: "publishing",
 				draft: {
 					kind: "top_level",
@@ -1291,16 +1292,20 @@ test("applyCommentResult removes published drafts", async () => {
 		url: "https://github.com/garden-co/jazz/pull/787#discussion_r1",
 	});
 
-	assert.deepEqual(useApp.getState().commentDrafts, []);
+	const [draft] = useApp.getState().commentDrafts;
+	assert.equal(draft?.id, "draft-123");
+	assert.equal(draft?.status, "published");
+	assert.equal(draft?.url, "https://github.com/garden-co/jazz/pull/787#discussion_r1");
 });
 
-test("applyCommentResult removes failed drafts", async () => {
+test("applyCommentResult updates failed drafts in place with error status", async () => {
 	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
 
 	useApp.setState({
 		commentDrafts: [
 			{
 				id: "draft-456",
+				marked: false,
 				status: "publishing",
 				draft: {
 					kind: "inline",
@@ -1319,7 +1324,10 @@ test("applyCommentResult removes failed drafts", async () => {
 		error: "GitHub rejected the comment.",
 	});
 
-	assert.deepEqual(useApp.getState().commentDrafts, []);
+	const [draft] = useApp.getState().commentDrafts;
+	assert.equal(draft?.id, "draft-456");
+	assert.equal(draft?.status, "error");
+	assert.equal(draft?.error, "GitHub rejected the comment.");
 });
 
 test("store does not keep diff file collapse state", async () => {
@@ -1330,4 +1338,48 @@ test("store does not keep diff file collapse state", async () => {
 	assert.doesNotMatch(source, /toggleFileExpanded/);
 	assert.doesNotMatch(source, /expandFiles/);
 	assert.doesNotMatch(source, /collapseAllFiles/);
+});
+
+test("addCommentDraft starts unmarked and pending", async () => {
+	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
+	await resetReviewState();
+
+	useApp.getState().addCommentDraft("draft-1", {
+		kind: "top_level",
+		body: "A note.",
+	});
+
+	const [draft] = useApp.getState().commentDrafts;
+	assert.equal(draft?.marked, false);
+	assert.equal(draft?.status, "pending");
+});
+
+test("setCommentMarked toggles the marked flag", async () => {
+	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
+	await resetReviewState();
+	useApp.getState().addCommentDraft("draft-1", { kind: "top_level", body: "x" });
+
+	useApp.getState().setCommentMarked("draft-1", true);
+	assert.equal(useApp.getState().commentDrafts[0]?.marked, true);
+
+	useApp.getState().setCommentMarked("draft-1", false);
+	assert.equal(useApp.getState().commentDrafts[0]?.marked, false);
+});
+
+test("applyCommentResult updates the draft in place instead of removing it", async () => {
+	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
+	await resetReviewState();
+	useApp.getState().addCommentDraft("draft-1", { kind: "top_level", body: "x" });
+	useApp.getState().setCommentMarked("draft-1", true);
+
+	useApp.getState().applyCommentResult({
+		draft_id: "draft-1",
+		status: "published",
+		url: "https://github.com/o/r/pull/1#discussion_r1",
+	});
+
+	const [draft] = useApp.getState().commentDrafts;
+	assert.equal(draft?.status, "published");
+	assert.equal(draft?.marked, true);
+	assert.equal(draft?.url, "https://github.com/o/r/pull/1#discussion_r1");
 });

@@ -74,11 +74,13 @@ test("requestAgentPublishApprovedDrafts sends one private agent publish prompt",
 		comment_drafts: [
 			{
 				id: "draft-1",
+				marked: false,
 				status: "approved",
 				draft: { kind: "top_level", body: "Summary." },
 			},
 			{
 				id: "draft-2",
+				marked: false,
 				status: "pending",
 				draft: { kind: "top_level", body: "Not added yet." },
 			},
@@ -114,6 +116,7 @@ test("requestAgentPublishApprovedDrafts restores approved drafts when send fails
 			comment_drafts: [
 				{
 					id: "draft-1",
+					marked: false,
 					status: "approved",
 					draft: { kind: "top_level", body: "Summary." },
 				},

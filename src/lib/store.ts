@@ -173,6 +173,7 @@ export type SectionState = PrDescriptionSectionState | ReviewSectionState;
 export interface CommentDraftState {
 	id: string;
 	draft: CommentDraft;
+	marked: boolean;
 	status:
 		| "pending"
 		| "approved"
@@ -243,6 +244,7 @@ interface AppState {
 	addCommentDraft: (id: string, draft: CommentDraft) => void;
 	updateCommentDraft: (id: string, patch: Partial<CommentDraftState>) => void;
 	editCommentDraftBody: (id: string, body: string) => void;
+	setCommentMarked: (id: string, marked: boolean) => void;
 	dismissCommentDraft: (id: string) => void;
 	applyCommentResult: (result: CommentResult) => void;
 
@@ -1247,7 +1249,7 @@ export const useApp = create<AppState>((set) => ({
 		set((state) => ({
 			commentDrafts: [
 				...state.commentDrafts,
-				{ id, draft, status: "pending" },
+				{ id, draft, marked: false, status: "pending" },
 			],
 		})),
 
@@ -1263,6 +1265,12 @@ export const useApp = create<AppState>((set) => ({
 				d.id === id ? { ...d, draft: { ...d.draft, body } } : d,
 			),
 		})),
+	setCommentMarked: (id, marked) =>
+		set((state) => ({
+			commentDrafts: state.commentDrafts.map((d) =>
+				d.id === id ? { ...d, marked } : d,
+			),
+		})),
 	dismissCommentDraft: (id) =>
 		set((state) => ({
 			commentDrafts: state.commentDrafts.filter((d) => d.id !== id),
@@ -1270,8 +1278,15 @@ export const useApp = create<AppState>((set) => ({
 
 	applyCommentResult: (result) =>
 		set((state) => ({
-			commentDrafts: state.commentDrafts.filter(
-				(d) => d.id !== result.draft_id,
+			commentDrafts: state.commentDrafts.map((d) =>
+				d.id === result.draft_id
+					? {
+							...d,
+							status: result.status === "published" ? "published" : "error",
+							url: result.url ?? d.url,
+							error: result.error,
+						}
+					: d,
 			),
 		})),
 
