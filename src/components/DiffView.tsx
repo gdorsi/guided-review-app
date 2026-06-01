@@ -38,6 +38,7 @@ import {
 	type SectionFeedbackNote,
 } from "@/lib/sectionFeedback";
 import { MarkdownViewer } from "./MarkdownViewer";
+import { ReviewSummaryView } from "./ReviewSummaryView";
 import { stripMarkdownForSummary } from "@/lib/markdownContent";
 import type { ReviewSection } from "@/lib/types/section";
 
@@ -741,6 +742,10 @@ export function DiffPane() {
 				</div>
 			</section>
 		);
+	}
+
+	if (current.kind === "review_summary") {
+		return <ReviewSummaryView />;
 	}
 
 	if (current && !section) {
