@@ -7,6 +7,7 @@ import { MarkdownViewer } from "./MarkdownViewer";
 import { FeedbackList } from "./Concerns";
 import { CommentDraftCard } from "./CommentDraftCard";
 import { createDiffFocusRange } from "@/lib/diffFocus";
+import { concernDraftId, concernToDraft } from "@/lib/concernReview";
 import type { Concern } from "@/lib/types/section";
 
 export function SectionList() {
@@ -16,6 +17,7 @@ export function SectionList() {
 	const setCurrent = useApp((s) => s.setCurrentSection);
 	const setDiffFocus = useApp((s) => s.setDiffFocus);
 	const drafts = useApp((s) => s.commentDrafts);
+	const toggleConcernDraft = useApp((s) => s.toggleConcernDraft);
 
 	const openConcernLocation = useCallback(
 		(sectionId: string, concern: Concern) => {
@@ -122,6 +124,18 @@ export function SectionList() {
 													concerns={concerns}
 													onOpenLocation={(concern) =>
 														openConcernLocation(s.id, concern)
+													}
+													isMarked={(concern) =>
+														drafts.some(
+															(d) =>
+																d.id === concernDraftId(s.id, concern),
+														)
+													}
+													onToggleMarked={(concern) =>
+														toggleConcernDraft(
+															concernDraftId(s.id, concern),
+															concernToDraft(concern),
+														)
 													}
 												/>
 											)}
