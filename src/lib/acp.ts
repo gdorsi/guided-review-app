@@ -91,6 +91,20 @@ export interface StartSessionResponse {
 	saved_review?: SavedReviewRecord;
 }
 
+export interface UpdatePrFromUpstreamRequest {
+	source: SessionSource;
+	previous_repo: ClonedRepo;
+}
+
+export interface UpdatePrFromUpstreamResponse {
+	repo: ClonedRepo;
+	pull_request?: PullRequestMetadata;
+	pull_request_error?: string;
+	published_comments: PublishedPrComment[];
+	published_comments_error?: string;
+	changed_files: string[];
+}
+
 export interface SavedReviewSummary {
 	id: string;
 	repo_url: string;
@@ -116,12 +130,11 @@ interface StartSectionTaskRequest {
 	additional_concerns_hint?: string;
 }
 
-interface StartSectionChatRequest {
+interface StartChatRequest {
 	parent_session_id: string;
-	section_id: string;
 }
 
-interface StartSectionChatResponse {
+interface StartChatResponse {
 	session_id: string;
 }
 
@@ -388,6 +401,34 @@ export const acp = {
 			throw e;
 		}
 	},
+	updatePrFromUpstream: async (req: UpdatePrFromUpstreamRequest) => {
+		recordClientTelemetry("client.acp.pr_update.requested", {
+			"session.source.kind": req.source.kind,
+			"repo.previous_head_sha": req.previous_repo.head_sha,
+		});
+		try {
+			const response = await invokeWithTelemetry<UpdatePrFromUpstreamResponse>(
+				"update_pr_from_upstream_cmd",
+				{ req },
+				{
+					"session.source.kind": req.source.kind,
+					"repo.previous_head_sha": req.previous_repo.head_sha,
+				},
+			);
+			recordClientTelemetry("client.acp.pr_update.succeeded", {
+				"session.source.kind": req.source.kind,
+				"repo.next_head_sha": response.repo.head_sha,
+				"pr_update.changed_file_count": response.changed_files.length,
+			});
+			return response;
+		} catch (e) {
+			recordClientTelemetryError("client.acp.pr_update.failed", e, {
+				"session.source.kind": req.source.kind,
+				"repo.previous_head_sha": req.previous_repo.head_sha,
+			});
+			throw e;
+		}
+	},
 	parsePrUrl: (url: string) =>
 		invokeWithTelemetry<[string, string, number] | null>("parse_pr_url_cmd", {
 			url,
@@ -448,30 +489,26 @@ export const acp = {
 			throw e;
 		}
 	},
-	startSectionChat: async (req: StartSectionChatRequest) => {
-		recordClientTelemetry("client.acp.section_chat.requested", {
+	startChat: async (req: StartChatRequest) => {
+		recordClientTelemetry("client.acp.chat.requested", {
 			"acp.session_id": req.parent_session_id,
-			"section.id": req.section_id,
 		});
 		try {
-			const response = await invokeWithTelemetry<StartSectionChatResponse>(
-				"start_section_chat_cmd",
+			const response = await invokeWithTelemetry<StartChatResponse>(
+				"start_chat_cmd",
 				{ req },
 				{
 					"acp.session_id": req.parent_session_id,
-					"section.id": req.section_id,
 				},
 			);
-			recordClientTelemetry("client.acp.section_chat.succeeded", {
+			recordClientTelemetry("client.acp.chat.succeeded", {
 				"acp.parent_session_id": req.parent_session_id,
 				"acp.session_id": response.session_id,
-				"section.id": req.section_id,
 			});
 			return response;
 		} catch (e) {
-			recordClientTelemetryError("client.acp.section_chat.failed", e, {
+			recordClientTelemetryError("client.acp.chat.failed", e, {
 				"acp.session_id": req.parent_session_id,
-				"section.id": req.section_id,
 			});
 			throw e;
 		}

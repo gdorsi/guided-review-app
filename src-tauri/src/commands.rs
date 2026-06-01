@@ -3,7 +3,7 @@ use crate::agent_runner::{list_agents, AgentInfo, AgentKind, ReasoningEffort};
 use crate::gh::{check_installation, GhCliStatus};
 use crate::projects::{self, RecentProject};
 use crate::repo::{
-    fetch_pull_request_metadata, fetch_pull_request_metadata_for_branch,
+    changed_diff_files, fetch_pull_request_metadata, fetch_pull_request_metadata_for_branch,
     fetch_pull_request_review_comments, get_changed_ranges, get_diff, get_file_at_ref,
     inspect_origin, parse_pr_url, resolve_source, ClonedRepo, DiffPatch, GithubRepoInfo,
     PublishedPrComment, PullRequestMetadata, SessionSource,
@@ -38,6 +38,22 @@ pub struct StartSessionResponse {
     pub published_comments: Vec<PublishedPrComment>,
     pub published_comments_error: Option<String>,
     pub saved_review: Option<SavedReviewRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdatePrFromUpstreamRequest {
+    pub source: SessionSource,
+    pub previous_repo: ClonedRepo,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UpdatePrFromUpstreamResponse {
+    pub repo: ClonedRepo,
+    pub pull_request: Option<PullRequestMetadata>,
+    pub pull_request_error: Option<String>,
+    pub published_comments: Vec<PublishedPrComment>,
+    pub published_comments_error: Option<String>,
+    pub changed_files: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -270,6 +286,67 @@ pub async fn start_session_cmd(
     }
     .instrument(span)
     .await
+}
+
+#[tauri::command]
+pub async fn update_pr_from_upstream_cmd(
+    req: UpdatePrFromUpstreamRequest,
+    telemetry_context: Option<TelemetryContext>,
+) -> Result<UpdatePrFromUpstreamResponse, String> {
+    let span = tracing::info_span!("pr.update_from_upstream", source = ?req.source);
+    telemetry::set_span_parent(&span, telemetry_context.as_ref());
+    async move {
+        if !is_pr_backed_source(&req.source) {
+            return Err("upstream update requires a PR-backed review".to_string());
+        }
+
+        let previous = req.previous_repo;
+        let refreshed = resolve_source(&req.source).await.map_err(|e| {
+            tracing::error!(error = %e, "resolve_source failed during PR update");
+            e.to_string()
+        })?;
+        let (pull_request, pull_request_error) =
+            pull_request_metadata_for_source(&req.source).await;
+        let (published_comments, published_comments_error) =
+            published_comments_for_source(&req.source).await;
+        let changed_files = tokio::task::spawn_blocking({
+            let path = refreshed.path.clone();
+            let old_base_ref = previous.base_ref.clone();
+            let old_head_sha = previous.head_sha.clone();
+            let new_base_ref = refreshed.base_ref.clone();
+            let new_head_sha = refreshed.head_sha.clone();
+            move || {
+                changed_diff_files(
+                    &path,
+                    &old_base_ref,
+                    &old_head_sha,
+                    &new_base_ref,
+                    &new_head_sha,
+                )
+            }
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+
+        Ok(UpdatePrFromUpstreamResponse {
+            repo: refreshed,
+            pull_request,
+            pull_request_error,
+            published_comments,
+            published_comments_error,
+            changed_files,
+        })
+    }
+    .instrument(span)
+    .await
+}
+
+fn is_pr_backed_source(source: &SessionSource) -> bool {
+    matches!(
+        source,
+        SessionSource::Pr { .. } | SessionSource::LocalPr { .. }
+    )
 }
 
 async fn saved_review_for_source(
@@ -542,27 +619,25 @@ pub async fn send_message_cmd(
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StartSectionChatRequest {
+pub struct StartChatRequest {
     pub parent_session_id: String,
-    pub section_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StartSectionChatResponse {
+pub struct StartChatResponse {
     pub session_id: String,
 }
 
 #[tauri::command]
-pub async fn start_section_chat_cmd(
+pub async fn start_chat_cmd(
     app: AppHandle,
     sessions: State<'_, AcpSessions>,
-    req: StartSectionChatRequest,
+    req: StartChatRequest,
     telemetry_context: Option<TelemetryContext>,
-) -> Result<StartSectionChatResponse, String> {
+) -> Result<StartChatResponse, String> {
     let span = tracing::info_span!(
-        "section_chat.start",
+        "chat.start",
         parent_session_id = %req.parent_session_id,
-        section_id = %req.section_id,
     );
     telemetry::set_span_parent(&span, telemetry_context.as_ref());
     async move {
@@ -577,17 +652,16 @@ pub async fn start_section_chat_cmd(
         let session = start_session(app, agent_kind, reasoning_effort, cwd)
             .await
             .map_err(|e| {
-                tracing::error!(error = %e, "section chat session start failed");
+                tracing::error!(error = %e, "chat session start failed");
                 e.to_string()
             })?;
         let session_id = session.session_id.clone();
         tracing::info!(
-            section_id = %req.section_id,
             session_id = %session_id,
-            "section chat session ready",
+            "chat session ready",
         );
         sessions.insert(session).await;
-        Ok(StartSectionChatResponse { session_id })
+        Ok(StartChatResponse { session_id })
     }
     .instrument(span)
     .await
@@ -773,6 +847,54 @@ mod tests {
             AGENT_SKILL.contains("```acp-section\n{\n  \"section_id\": \"api-changes\""),
             "agent skill should show the exact acp-section fence tag with a JSON body"
         );
+    }
+
+    #[test]
+    fn pr_backed_source_accepts_remote_and_local_pr_sources() {
+        assert!(is_pr_backed_source(&SessionSource::Pr {
+            repo_url: "https://github.com/garden-co/review".to_string(),
+            number: 17,
+        }));
+        assert!(is_pr_backed_source(&SessionSource::LocalPr {
+            path: PathBuf::from("/tmp/review"),
+            repo_url: "https://github.com/garden-co/review".to_string(),
+            number: 17,
+        }));
+    }
+
+    #[test]
+    fn pr_backed_source_rejects_non_pr_sources() {
+        assert!(!is_pr_backed_source(&SessionSource::Local {
+            path: PathBuf::from("/tmp/review"),
+        }));
+        assert!(!is_pr_backed_source(&SessionSource::LocalBranch {
+            path: PathBuf::from("/tmp/review"),
+            branch: "feature".to_string(),
+        }));
+    }
+
+    #[test]
+    fn update_pr_from_upstream_response_serializes_changed_files() {
+        let response = UpdatePrFromUpstreamResponse {
+            repo: ClonedRepo {
+                path: PathBuf::from("/tmp/review"),
+                head_ref: "guided-review-pr-17".to_string(),
+                head_sha: "next-sha".to_string(),
+                base_ref: "origin/main".to_string(),
+                display_slug: "review".to_string(),
+            },
+            pull_request: None,
+            pull_request_error: Some("metadata unavailable".to_string()),
+            published_comments: Vec::new(),
+            published_comments_error: None,
+            changed_files: vec!["src/app.ts".to_string()],
+        };
+
+        let value = serde_json::to_value(response).unwrap();
+
+        assert_eq!(value["repo"]["head_sha"], "next-sha");
+        assert_eq!(value["pull_request_error"], "metadata unavailable");
+        assert_eq!(value["changed_files"][0], "src/app.ts");
     }
 
     #[test]

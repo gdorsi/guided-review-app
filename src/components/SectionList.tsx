@@ -18,6 +18,7 @@ export function SectionList() {
 	const setDiffFocus = useApp((s) => s.setDiffFocus);
 	const drafts = useApp((s) => s.commentDrafts);
 	const toggleConcernDraft = useApp((s) => s.toggleConcernDraft);
+	const overviewConcernGroups = sectionConcernGroups(sections);
 
 	const openConcernLocation = useCallback(
 		(sectionId: string, concern: Concern) => {
@@ -36,6 +37,21 @@ export function SectionList() {
 		[setCurrent, setDiffFocus],
 	);
 
+	const isConcernMarked = useCallback(
+		(sectionId: string, concern: Concern) =>
+			drafts.some((d) => d.id === concernDraftId(sectionId, concern)),
+		[drafts],
+	);
+
+	const toggleConcern = useCallback(
+		(sectionId: string, concern: Concern) =>
+			toggleConcernDraft(
+				concernDraftId(sectionId, concern),
+				concernToDraft(concern),
+			),
+		[toggleConcernDraft],
+	);
+
 	return (
 		<aside className="flex h-full min-h-0 min-w-0 flex-col border-r border-border bg-card/30">
 			<div className="border-b border-border px-4 py-3 text-sm font-semibold text-muted-foreground">
@@ -51,6 +67,8 @@ export function SectionList() {
 						const isProcessing = processingIds.includes(s.id);
 						const isSelected = s.id === currentId;
 						const concerns = sectionConcerns(s);
+						const showOverviewConcernGroups =
+							s.kind === "pr_description" && isSelected;
 						return (
 							<li
 								key={s.id}
@@ -118,7 +136,28 @@ export function SectionList() {
 													className="text-xs text-muted-foreground"
 												/>
 											)}
-											{concerns.length > 0 && (
+											{showOverviewConcernGroups &&
+												overviewConcernGroups.length > 0 && (
+													<div className="space-y-3 border-t border-border/40 pt-3">
+														{overviewConcernGroups.map((group) => (
+															<FeedbackList
+																key={group.id}
+																title={`Concerns: ${group.title}`}
+																concerns={group.concerns}
+																onOpenLocation={(concern) =>
+																	openConcernLocation(group.id, concern)
+																}
+																isMarked={(concern) =>
+																	isConcernMarked(group.id, concern)
+																}
+																onToggleMarked={(concern) =>
+																	toggleConcern(group.id, concern)
+																}
+															/>
+														))}
+													</div>
+												)}
+											{!showOverviewConcernGroups && concerns.length > 0 && (
 												<FeedbackList
 													title="Concerns"
 													concerns={concerns}
@@ -126,16 +165,10 @@ export function SectionList() {
 														openConcernLocation(s.id, concern)
 													}
 													isMarked={(concern) =>
-														drafts.some(
-															(d) =>
-																d.id === concernDraftId(s.id, concern),
-														)
+														isConcernMarked(s.id, concern)
 													}
 													onToggleMarked={(concern) =>
-														toggleConcernDraft(
-															concernDraftId(s.id, concern),
-															concernToDraft(concern),
-														)
+														toggleConcern(s.id, concern)
 													}
 												/>
 											)}
@@ -176,4 +209,25 @@ function CommentDraftsFooter() {
 function sectionConcerns(s: SectionState): Concern[] {
 	if (s.kind !== "review_section") return [];
 	return s.section?.concerns ?? [];
+}
+
+interface SectionConcernGroup {
+	id: string;
+	title: string;
+	concerns: Concern[];
+}
+
+function sectionConcernGroups(sections: SectionState[]): SectionConcernGroup[] {
+	return sections.flatMap((section) => {
+		if (section.kind !== "review_section") return [];
+		const concerns = sectionConcerns(section);
+		if (concerns.length === 0) return [];
+		return [
+			{
+				id: section.id,
+				title: section.title,
+				concerns,
+			},
+		];
+	});
 }

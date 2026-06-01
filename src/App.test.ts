@@ -10,12 +10,35 @@ test("App starts the next unloaded section after final section feedback arrives"
 	assert.match(source, /auto_load_next/);
 });
 
-test("App shows saved-review freshness only for the loaded review", async () => {
+test("App leaves saved-review freshness in the launcher controls", async () => {
 	const source = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
 
-	assert.match(source, /saved_review_is_stale/);
-	assert.match(source, /Saved review is stale/);
-	assert.match(source, /Saved review matches the current PR head/);
+	assert.doesNotMatch(source, /SavedReviewFreshnessBadge/);
+	assert.doesNotMatch(source, /Saved review is stale/);
+	assert.doesNotMatch(source, /Saved review matches the current PR head/);
+});
+
+test("App header does not render the raw session ref label", async () => {
+	const source = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
+
+	assert.doesNotMatch(source, /←/);
+});
+
+test("App exposes PR upstream update and reprocesses affected sections", async () => {
+	const source = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
+
+	assert.match(source, /updatePrFromUpstream/);
+	assert.match(source, /findSectionsAffectedByChangedFiles/);
+	assert.match(source, /buildUpstreamChangeHint/);
+	assert.match(source, /additional_concerns_hint/);
+	assert.match(source, /Update/);
+});
+
+test("App passes PR update status into the launcher history area", async () => {
+	const source = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
+
+	assert.match(source, /<ReviewLauncher\s+beforeHistory=/);
+	assert.match(source, /isPrBackedSession\(session\) && prUpdateStatus/);
 });
 
 test("App renders guided display-message tool calls as processed assistant chat", async () => {
