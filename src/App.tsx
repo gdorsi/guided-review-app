@@ -370,6 +370,7 @@ export default function App() {
 				"section.id": p.section.section_id,
 				"section.file_count": p.section.files.length,
 				"section.concern_count": p.section.concerns.length,
+				"section.grill_question_count": p.section.grill_questions.length,
 				"section.suppress_chat": p.suppress_chat ?? false,
 			});
 			upsertSection(p.section);
@@ -389,6 +390,7 @@ export default function App() {
 				"section.phase": p.update.phase,
 				"section.file_count": p.update.files?.length,
 				"section.concern_count": p.update.concerns?.length,
+				"section.grill_question_count": p.update.grill_questions?.length,
 			});
 			upsertSectionProgress(p.update);
 		};
@@ -534,13 +536,13 @@ export default function App() {
 			for (const u of registered) u();
 		};
 	}, [
-			setSectionMap,
-			upsertSection,
-			upsertSectionProgress,
-			setCurrentSection,
-			startSectionTask,
-			startSectionProcessing,
-			finishSectionProcessing,
+		setSectionMap,
+		upsertSection,
+		upsertSectionProgress,
+		setCurrentSection,
+		startSectionTask,
+		startSectionProcessing,
+		finishSectionProcessing,
 		appendAssistantChunk,
 		finishAssistantMessage,
 		addSectionMapItem,
@@ -548,11 +550,11 @@ export default function App() {
 		addToolCallItem,
 		updateToolCallItem,
 		setPrDescriptionBody,
-			pushError,
-			addCommentDraft,
-			applyCommentResult,
-			pushStderr,
-		]);
+		pushError,
+		addCommentDraft,
+		applyCommentResult,
+		pushStderr,
+	]);
 
 	async function updatePrFromUpstream() {
 		if (!session || !isPrBackedSession(session) || updatingPr) return;

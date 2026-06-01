@@ -141,3 +141,20 @@ test("DiffView offers a feedback request for preview-only sections", async () =>
 	assert.match(source, /startSectionTask/);
 	assert.match(source, /feedbackLoaded/);
 });
+
+test("DiffView renders grill questions as answerable inline annotations", async () => {
+	const source = await readFile(
+		new URL("./DiffView.tsx", import.meta.url),
+		"utf8",
+	);
+
+	assert.match(source, /GrillQuestionAnnotation/);
+	assert.match(source, /Agree with PR/);
+	assert.match(source, /Use recommendation/);
+	assert.match(source, /free-form answer/);
+	assert.match(source, /questionAnswerPanelClassName/);
+	assert.match(source, /min-w-0/);
+	assert.match(source, /overflow-wrap:anywhere/);
+	assert.match(source, /sendGrillQuestionAnswer/);
+	assert.doesNotMatch(source, /current\?\.kind === "grill_question"/);
+});

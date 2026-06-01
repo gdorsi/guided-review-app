@@ -48,3 +48,14 @@ test("ReviewLauncher asks for a PR description before the section map when neede
 	assert.doesNotMatch(src, /```acp-spec/);
 	assert.doesNotMatch(src, /SPEC/);
 });
+
+test("ReviewLauncher has only the section-map review kickoff", async () => {
+	const src = await readFile(reviewLauncherPath, "utf8");
+
+	assert.doesNotMatch(src, /reviewMode/);
+	assert.doesNotMatch(src, /setReviewMode/);
+	assert.doesNotMatch(src, /Grill-me/);
+	assert.match(src, /sendFreshKickoff\(res\)/);
+	assert.doesNotMatch(src, /acp-grill-question/);
+	assert.match(src, /acp-section-map/);
+});

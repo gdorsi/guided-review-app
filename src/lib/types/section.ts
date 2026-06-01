@@ -1,3 +1,5 @@
+import type { GrillQuestion } from "./grill";
+
 export type Severity = "high" | "medium" | "low";
 
 export type RangeKind =
@@ -29,6 +31,7 @@ export interface ReviewSection {
 	files: string[];
 	ranges: LineRange[];
 	concerns: Concern[];
+	grill_questions: GrillQuestion[];
 	base_ref: string;
 	head_ref: string;
 	pause_prompt: string;
@@ -57,6 +60,7 @@ export interface SectionProgressUpdate {
 	files?: string[];
 	ranges?: LineRange[];
 	concerns?: Concern[];
+	grill_questions?: GrillQuestion[];
 	base_ref?: string;
 	head_ref?: string;
 }

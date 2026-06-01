@@ -175,11 +175,12 @@ export function ReviewLauncher({ beforeHistory }: ReviewLauncherProps = {}) {
 			res.published_comments,
 			res.published_comments_error,
 		);
+		const reviewContext = `The repository for this review is at \`${res.repo.path}\` (base \`${res.repo.base_ref}\`, head \`${res.repo.head_ref}\`).`;
 		const prDescriptionInstruction =
 			res.pull_request || res.pull_request_error
 				? ""
 				: "\n\nThis review has no GitHub PR description. Before emitting the section map, emit one ```acp-pr-description``` fenced block whose body is a concise Markdown summary of the branch (read the commit log between base and head, then summarize the intent and the scope of changes in 1-3 short paragraphs). Do not include code excerpts.";
-		const kickoff = `${skill}\n\n---\n\nThe repository for this review is at \`${res.repo.path}\` (base \`${res.repo.base_ref}\`, head \`${res.repo.head_ref}\`).\n\n${publishedCommentContext}${prDescriptionInstruction}\n\nInvestigate the diff with your built-in tools, then reply with one \`\`\`acp-section-map\`\`\` fenced block describing the planned sections. After that, stop and wait for me.`;
+		const kickoff = `${skill}\n\n---\n\n${reviewContext}\n\n${publishedCommentContext}${prDescriptionInstruction}\n\nInvestigate the diff with your built-in tools, then reply with one \`\`\`acp-section-map\`\`\` fenced block describing the planned sections. After that, stop and wait for me.`;
 		addUserMessage("(starting guided review)");
 		await acp.sendMessage(res.session_id, kickoff, {
 			origin: "review_launcher_kickoff",
@@ -193,7 +194,10 @@ export function ReviewLauncher({ beforeHistory }: ReviewLauncherProps = {}) {
 		});
 	}
 
-	async function startFreshReview(res: StartSessionResponse, clearSaved: boolean) {
+	async function startFreshReview(
+		res: StartSessionResponse,
+		clearSaved: boolean,
+	) {
 		if (clearSaved) {
 			const target = reviewTargetFromSource(res.source);
 			if (target) await acp.deleteSavedReview(target);

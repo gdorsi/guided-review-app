@@ -36,6 +36,8 @@ struct SectionWire {
     #[serde(default)]
     concerns: Vec<crate::section::Concern>,
     #[serde(default)]
+    grill_questions: Vec<crate::section::GrillQuestion>,
+    #[serde(default)]
     base_ref: String,
     #[serde(default)]
     head_ref: String,
@@ -150,6 +152,7 @@ fn handle_block(app: &AppHandle, session_id: &str, tag: &str, body: &str, suppre
                     files: wire.files,
                     ranges: wire.ranges,
                     concerns: wire.concerns,
+                    grill_questions: wire.grill_questions,
                     base_ref: wire.base_ref,
                     head_ref: wire.head_ref,
                     pause_prompt: wire.pause_prompt,
@@ -160,6 +163,7 @@ fn handle_block(app: &AppHandle, session_id: &str, tag: &str, body: &str, suppre
                     section_id = %section.section_id,
                     files = section.files.len(),
                     concerns = section.concerns.len(),
+                    grill_questions = section.grill_questions.len(),
                 );
                 let _enter = span.enter();
                 tracing::info!(
@@ -167,6 +171,7 @@ fn handle_block(app: &AppHandle, session_id: &str, tag: &str, body: &str, suppre
                     section_id = %section.section_id,
                     files = section.files.len(),
                     concerns = section.concerns.len(),
+                    grill_questions = section.grill_questions.len(),
                     "section parsed",
                 );
                 let _ = app.emit(
@@ -317,7 +322,7 @@ fn extract_fenced_blocks(buf: &str) -> Vec<(String, String, usize)> {
 #[cfg(test)]
 mod tests {
     use super::{extract_fenced_blocks, parse_lenient};
-    use crate::section::{CommentResult, CommentResultStatus};
+    use crate::section::{CommentResult, CommentResultStatus, GrillQuestion};
 
     #[test]
     fn extracts_pr_description_blocks() {
@@ -370,5 +375,29 @@ mod tests {
         );
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn parses_inline_grill_question_body() {
+        let question: GrillQuestion = parse_lenient(
+            r#"{
+                "question_id": "error-boundary-policy",
+                "title": "Error boundary policy",
+                "question": "Should malformed JSON fail closed?",
+                "pr_choice": "The PR keeps the review going.",
+                "recommended_answer": "Fail closed when state is ambiguous.",
+                "file_path": "src-tauri/src/fenced.rs",
+                "line": 120
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(question.schema_version, 1);
+        assert_eq!(question.question_id, "error-boundary-policy");
+        assert_eq!(
+            question.file_path.as_deref(),
+            Some("src-tauri/src/fenced.rs")
+        );
+        assert_eq!(question.line, Some(120));
     }
 }

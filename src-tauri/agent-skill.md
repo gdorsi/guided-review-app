@@ -33,8 +33,8 @@ Do not use caveman-style fragments in any JSON field shown to the user. Keep sec
 ## Workflow
 
 1. On the **first turn**, emit one ` ```acp-section-map ` block describing the planned sections and the files each section covers. If the host explicitly says there is no GitHub PR description, emit one ` ```acp-pr-description ` block before the section map. Then stop.
-2. When the user asks to see a section (or says "go ahead"), delegate the analysis to a sub-agent if one is available (see "Per-section delegation"); otherwise inspect the section yourself. Then emit one final feedback-only ` ```acp-section ` block for that section. Then stop. Render concerns via the JSON fields — do not duplicate them in prose.
-3. Wait for the user. Do not advance to the next section automatically.
+2. When the user asks to see a section (or says "go ahead"), delegate the analysis to a sub-agent if one is available (see "Per-section delegation"); otherwise inspect the section yourself. Then emit one final feedback-only ` ```acp-section ` block for that section. Include both actionable concerns and grill-me questions for every meaningful forked design choice where the PR chose one path and another plausible path remains. Concerns and questions are independent: ask questions even when there are no concerns. Then stop. Render concerns and questions via the JSON fields — do not duplicate them in prose.
+3. Wait for the user. Do not advance to the next section automatically. If the user answers a grill-me question, use that answer as context; when it disagrees with the PR choice, emit `acp-comment-draft` blocks for the comments that should be submitted.
 4. Treat any existing published PR review comments from the host as context. Do not repeat feedback that has already been covered by those comments.
 5. If the user asks to leave a PR comment, emit one ` ```acp-comment-draft ` block. The host shows a preview and saves approved drafts locally.
 6. When the host asks you to publish, it may request that you submit the marked comments as a **single pull request review** with a specific event: `COMMENT` (comment only, do not approve) or `APPROVE` (approve the PR and include the comments). Create one review with that event using your own GitHub tools and auth. After each draft is attempted, emit one ` ```acp-comment-result ` block with that draft's result.
@@ -54,7 +54,7 @@ Sub-agent prompt (pass as the task description, filling the placeholders from th
 	Files: <files>
 	Base ref: <base_ref>   Head ref: <head_ref>
 
-	Read the diff for these files with your built-in tools (e.g. `git diff <base_ref>..<head_ref> -- <files>`). Identify real concerns.
+	Read the diff for these files with your built-in tools (e.g. `git diff <base_ref>..<head_ref> -- <files>`). Identify real concerns and all meaningful forked design choices.
 
 	Use compact, filler-free private notes while analysing. Keep returned concern `text` polished, normal, and beginner-friendly.
 
@@ -70,21 +70,40 @@ Sub-agent prompt (pass as the task description, filling the placeholders from th
 
 	Each concern must follow from the actual code, not a guess; the surrounding code must not already handle it; the impact must be worth the user's attention. Use language a 10-year-old could follow. Label each concern `high`, `medium`, or `low`.
 
+	For grill-me questions, treat a design choice as question-worthy when the PR chose one implementation and a different implementation, API shape, boundary, policy, UX, test strategy, or rollout path is still plausible. Ask even if you found no concern. First inspect the diff, surrounding code, callers, docs, and existing patterns; do not ask if that context resolves the fork. Each question must include what the PR currently does (`pr_choice`), your recommended answer (`recommended_answer`), and an exact changed line (`file_path`, `line`) where the host should render it.
+
 	Return a single JSON object and nothing else — no prose, no fenced code blocks:
 
 	{
-	  "concerns": [{ "text": "...", "severity": "medium", "file_path": "src/...", "line": 24 }]
+	  "concerns": [{ "text": "...", "severity": "medium", "file_path": "src/...", "line": 24 }],
+	  "grill_questions": [
+	    {
+	      "question_id": "error-boundary-policy",
+	      "title": "Error boundary policy",
+	      "question": "Should malformed agent output fail closed?",
+	      "pr_choice": "The PR currently falls back to an empty concern list and continues the review.",
+	      "recommended_answer": "Fail closed when malformed output makes review state ambiguous.",
+	      "file_path": "src/...",
+	      "line": 24
+	    }
+	  ]
 	}
 
 	Do not emit any fenced ` ```acp-* ` block and do not call any `guided_review_*` tool. Your output is read by the parent agent, not by the host.
 
-When the sub-agent returns, do not copy its concerns verbatim. For **every** entry in `concerns`, perform a parent-side false-positive check:
+When the sub-agent returns, do not copy its output verbatim. For **every** entry in `concerns`, perform a parent-side false-positive check:
 
 1. Open the cited `file_path` at the cited `line` with your read tools and confirm the code there actually exhibits the issue the sub-agent described.
 2. Inspect the surrounding code (caller, callee, sibling branches in the same function) to confirm the concern is not already neutralised by existing handling.
 3. Confirm the concern is worth the user's attention — drop nitpicks, stylistic preferences, and items that restate what the diff already makes obvious.
 
-Drop any entry that fails the check. Do not surface a "removed" list — silent filtering keeps the section output focused. Only surviving entries are written into the final `acp-section` block alongside `section_id`. If the sub-agent's JSON is malformed or every concern is filtered out, emit `"concerns": []`. Do not progressive-stream the sub-agent's intermediate work; you have nothing incremental to share. If the sub-agent fails outright, do the analysis yourself in this same turn under the same rubric and emit the block as usual.
+For **every** entry in `grill_questions`, perform a parent-side fork check:
+
+1. Open the cited `file_path` at the cited `line` and confirm it is a changed line tied to the choice.
+2. Inspect surrounding code, callers, docs, and existing patterns to confirm the answer is not already determined.
+3. Confirm the fork is meaningful enough to ask the user; drop trivia, style-only preferences, and questions whose answer would not change the review outcome.
+
+Drop any concern or question that fails its check. Do not surface a "removed" list — silent filtering keeps the section output focused. Only surviving entries are written into the final `acp-section` block alongside `section_id`. If the sub-agent's JSON is malformed or every concern and question is filtered out, emit `"concerns": []` and `"grill_questions": []`. Do not progressive-stream the sub-agent's intermediate work; you have nothing incremental to share. If the sub-agent fails outright, do the analysis yourself in this same turn under the same rubric and emit the block as usual.
 
 ## Non-negotiables
 
@@ -96,6 +115,7 @@ Drop any entry that fails the check. Do not surface a "removed" list — silent 
 6. Prefer simple, beginner-friendly language. Explain project terms when they matter.
 7. Use absolute paths relative to the repo root in all file paths.
 8. Explain in `intent` what the section does as a markdown that a 10-year-old could follow
+9. Grill-me questions are not concerns. Emit them for unresolved meaningful forks even if the section has zero concerns.
 
 ## Block formats
 
@@ -146,7 +166,8 @@ Tool input shape:
 {
   "section_id": "api-changes",
   "phase": "feedback",
-  "concerns": []
+  "concerns": [],
+  "grill_questions": []
 }
 ```
 
@@ -159,6 +180,17 @@ After any progressive tool calls, still emit the final feedback-only `acp-sectio
   "concerns": [
     { "text": "Empty body returns 200 — should it 400?", "severity": "medium", "file_path": "src/api/handlers.rs", "line": 24 },
     { "text": "No test for the rate-limited path.", "severity": "low", "file_path": "src/api/handlers.rs", "line": 88 }
+  ],
+  "grill_questions": [
+    {
+      "question_id": "empty-body-contract",
+      "title": "Empty body contract",
+      "question": "Should an empty body return 400?",
+      "pr_choice": "The PR currently lets this input reach the handler.",
+      "recommended_answer": "Return 400 before handler work starts.",
+      "file_path": "src/api/handlers.rs",
+      "line": 24
+    }
   ]
 }
 ```
@@ -168,7 +200,7 @@ After any progressive tool calls, still emit the final feedback-only `acp-sectio
 
 The section map `intent` field is shown as markdown in the section header. Explain what the section covers, so the user knows what they are going to review.
 
-If a section has no actionable concerns, emit `"concerns": []`.
+If a section has no actionable concerns or questions, emit `"concerns": []` and `"grill_questions": []`.
 
 ### ` ```acp-comment-draft ` (emit when the user asks to leave a PR comment)
 

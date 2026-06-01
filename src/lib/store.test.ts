@@ -81,6 +81,8 @@ async function resetReviewState() {
 		errors: [],
 		stderr: [],
 		structuredReviewBlockOpen: false,
+		structuredReviewBlockPrefix: "",
+		structuredReviewMarkdownFenceOpen: false,
 		diffFocus: null,
 		diffFocusError: null,
 	});
@@ -108,6 +110,8 @@ function clearChatState(useApp: { setState: (patch: object) => void }) {
 		chatTabForSession: {},
 		streaming: false,
 		structuredReviewBlockOpen: false,
+		structuredReviewBlockPrefix: "",
+		structuredReviewMarkdownFenceOpen: false,
 	});
 }
 
@@ -151,6 +155,45 @@ test("setSession stores one-off published PR comment context", async () => {
 	assert.equal(typeof fetchedAt, "number");
 	assert(fetchedAt! >= before);
 	assert(fetchedAt! <= after);
+});
+
+test("upsertSection stores grill questions alongside section feedback", async () => {
+	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
+	await resetReviewState();
+
+	useApp.getState().setSession(prSession);
+	useApp.getState().upsertSection({
+		schema_version: 1,
+		section_id: "api",
+		title: "API",
+		intent: "Review API changes",
+		files: ["src-tauri/src/fenced.rs"],
+		ranges: [],
+		base_ref: "",
+		head_ref: "",
+		concerns: [],
+		grill_questions: [
+			{
+				question_id: "error-boundary-policy",
+				title: "Error boundary policy",
+				question: "Should malformed JSON fail closed?",
+				pr_choice: "The PR keeps the review going.",
+				recommended_answer: "Fail closed when state is ambiguous.",
+				file_path: "src-tauri/src/fenced.rs",
+				line: 120,
+			},
+		],
+		pause_prompt: "",
+	});
+
+	const item = useApp.getState().sections[1];
+	assert.equal(item?.kind, "review_section");
+	assert.equal(
+		item?.kind === "review_section"
+			? item.section?.grill_questions[0]?.question_id
+			: "",
+		"error-boundary-policy",
+	);
 });
 
 test("refreshSessionMetadata updates PR metadata without rebuilding review state", async () => {
@@ -1297,6 +1340,125 @@ test("structured review fences split around a readable item stay hidden", async 
 	assert.equal(chat[2]?.text.trim(), "Ready when you are.");
 	assert(!chat.some((message) => message.text.includes("```acp-section-map")));
 	assert(!chat.some((message) => message.text.includes("Release metadata")));
+});
+
+test("split structured section-map opener stays hidden from response chat", async () => {
+	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
+
+	clearChatState(useApp);
+
+	for (const chunk of [
+		"```",
+		"ac",
+		"p",
+		"-section",
+		"-map",
+		"\n",
+		"{\n",
+		'  "sections": []\n',
+		"}\n",
+	]) {
+		useApp.getState().appendAssistantChunk(chunk, { kind: "response" });
+	}
+	useApp.getState().addSectionMapItem([
+		{
+			section_id: "query-rules",
+			title: "Query support rule changes",
+			intent: "Core logic",
+		},
+	]);
+	useApp.getState().appendAssistantChunk("```", { kind: "response" });
+
+	const chat = overviewChat(useApp.getState()) as ChatMessage[];
+	assert.equal(chat.length, 1);
+	assert.equal(chat[0]?.item?.type, "section_map");
+	assert(!chat.some((message) => message.text.includes("```acp-section-map")));
+	assert(!chat.some((message) => message.text.includes('"sections"')));
+});
+
+test("split structured section block does not create an empty response", async () => {
+	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
+
+	clearChatState(useApp);
+
+	for (const chunk of [
+		"```",
+		"ac",
+		"p",
+		"-section",
+		"\n",
+		"{\n",
+		'  "section_id": "query-rules",\n',
+		'  "title": "Query rules",\n',
+		'  "intent": "Review query behavior",\n',
+	]) {
+		useApp.getState().appendAssistantChunk(chunk, { kind: "response" });
+	}
+	useApp.getState().addReviewSectionItem({
+		schema_version: 1,
+		section_id: "query-rules",
+		title: "Query rules",
+		intent: "Review query behavior",
+		files: ["src/lib/store.ts"],
+		ranges: [],
+		concerns: [],
+		grill_questions: [],
+		base_ref: "base",
+		head_ref: "head",
+		pause_prompt: "",
+	});
+	useApp.getState().appendAssistantChunk(
+		[
+			'  "files": ["src/lib/store.ts"],',
+			'  "ranges": [],',
+			'  "concerns": [],',
+			'  "grill_questions": [],',
+			'  "base_ref": "base",',
+			'  "head_ref": "head",',
+			'  "pause_prompt": ""',
+			"}",
+			"```",
+		].join("\n"),
+		{ kind: "response" },
+	);
+
+	const chat = overviewChat(useApp.getState()) as ChatMessage[];
+	assert.equal(chat.length, 1);
+	assert.equal(chat[0]?.item?.type, "review_section");
+	assert(!chat.some((message) => message.text.includes("```acp-section")));
+	assert(!chat.some((message) => message.text.includes('"section_id"')));
+});
+
+test("split normal markdown code fence remains visible as response chat", async () => {
+	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
+
+	clearChatState(useApp);
+
+	useApp.getState().appendAssistantChunk("```", { kind: "response" });
+	useApp.getState().appendAssistantChunk("ts\nconst ok = true;\n```", {
+		kind: "response",
+	});
+
+	const [message] = overviewChat(useApp.getState()) as ChatMessage[];
+	assert.equal(message?.text, "```ts\nconst ok = true;\n```");
+	assert.deepEqual(message?.parts, [
+		{ type: "assistant_response", markdown: "```ts\nconst ok = true;\n```" },
+	]);
+});
+
+test("split inline backtick remains visible as response chat", async () => {
+	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
+
+	clearChatState(useApp);
+
+	useApp.getState().appendAssistantChunk("Use `", { kind: "response" });
+	useApp.getState().appendAssistantChunk("code` now", { kind: "response" });
+
+	const [message] = overviewChat(useApp.getState()) as ChatMessage[];
+	assert.equal(message?.text, "Use `code` now");
+	assert.deepEqual(message?.parts, [
+		{ type: "assistant_response", markdown: "Use `code` now" },
+	]);
 });
 
 test("processed display-message chunks preserve collapsed thinking and add a response", async () => {

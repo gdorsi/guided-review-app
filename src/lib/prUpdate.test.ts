@@ -23,6 +23,7 @@ function reviewSection(id: string, files: string[]): SectionState {
 			files,
 			ranges: [],
 			concerns: [],
+			grill_questions: [],
 			base_ref: "origin/main",
 			head_ref: "guided-review-pr-17",
 			pause_prompt: "",

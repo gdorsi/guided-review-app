@@ -41,6 +41,7 @@ export const OVERVIEW_CHAT_TAB_ID = "overview";
 function hasSectionFeedback(section: ReviewSection): boolean {
 	return (
 		section.concerns.length > 0 ||
+		section.grill_questions.length > 0 ||
 		section.pause_prompt.trim().length > 0
 	);
 }
@@ -59,6 +60,7 @@ function emptyFeedbackSection(
 		files: [],
 		ranges: [],
 		concerns: [],
+		grill_questions: [],
 		base_ref: session?.repo.base_ref ?? "",
 		head_ref: session?.repo.head_ref ?? "",
 		pause_prompt: "",
@@ -118,6 +120,8 @@ function mergeSectionProgress(
 			? previous?.ranges ?? []
 			: update.ranges ?? previous?.ranges ?? [],
 		concerns: update.concerns ?? previous?.concerns ?? [],
+		grill_questions:
+			update.grill_questions ?? previous?.grill_questions ?? [],
 		base_ref: update.base_ref ?? previous?.base_ref ?? session?.repo.base_ref ?? "",
 		head_ref: update.head_ref ?? previous?.head_ref ?? session?.repo.head_ref ?? "",
 		pause_prompt: previous?.pause_prompt ?? "",
@@ -139,6 +143,7 @@ function mergeSectionFeedback(
 		files: previousHasStructure ? previous?.files ?? [] : section.files ?? [],
 		ranges: previousHasStructure ? previous?.ranges ?? [] : section.ranges ?? [],
 		concerns: section.concerns ?? [],
+		grill_questions: section.grill_questions ?? [],
 		base_ref: previousHasStructure
 			? previous?.base_ref ?? ""
 			: section.base_ref || session?.repo.base_ref || "",
@@ -153,11 +158,11 @@ interface BaseSectionState {
 	id: string;
 	title: string;
 	intent: string;
-	status: SectionStatus;
 }
 
 export interface PrDescriptionSectionState extends BaseSectionState {
 	kind: "pr_description";
+	status: SectionStatus;
 	body: string;
 	url?: string;
 	error?: string;
@@ -165,12 +170,14 @@ export interface PrDescriptionSectionState extends BaseSectionState {
 
 export interface ReviewSectionState extends BaseSectionState {
 	kind: "review_section";
+	status: SectionStatus;
 	section?: ReviewSection;
 	feedbackLoaded?: boolean;
 }
 
 export interface ReviewSummarySectionState extends BaseSectionState {
 	kind: "review_summary";
+	status: SectionStatus;
 }
 
 export type SectionState =
@@ -233,6 +240,8 @@ export interface AppState {
 	errors: string[];
 	stderr: string[];
 	structuredReviewBlockOpen: boolean;
+	structuredReviewBlockPrefix: string;
+	structuredReviewMarkdownFenceOpen: boolean;
 	diffFocus: DiffFocusRange | null;
 	diffFocusError: string | null;
 
@@ -413,10 +422,25 @@ function appendStreamingText(
 	};
 }
 
-const STRUCTURED_REVIEW_BLOCK_RE =
-	/```[ \t]*(?:acp-pr-description|acp-section-map|acp-section|acp-comment-draft|acp-comment-result)[^\n]*\n[\s\S]*?\n```[ \t]*(?:\r?\n)?/g;
-const STRUCTURED_REVIEW_BLOCK_START_RE =
-	/```[ \t]*(?:acp-pr-description|acp-section-map|acp-section|acp-comment-draft|acp-comment-result)[^\n]*\r?\n/g;
+const STRUCTURED_REVIEW_TAGS = [
+	"acp-pr-description",
+	"acp-section-map",
+	"acp-section",
+	"acp-comment-draft",
+	"acp-comment-result",
+];
+const STRUCTURED_REVIEW_TAG_PATTERN = STRUCTURED_REVIEW_TAGS.join("|");
+const STRUCTURED_REVIEW_BLOCK_RE = new RegExp(
+	"```[ \\t]*(?:" +
+		STRUCTURED_REVIEW_TAG_PATTERN +
+		")[^\\n]*\\n[\\s\\S]*?\\n```[ \\t]*(?:\\r?\\n)?",
+	"g",
+);
+const STRUCTURED_REVIEW_BLOCK_OPEN_RE = new RegExp(
+	"^```[ \\t]*(?:" +
+		STRUCTURED_REVIEW_TAG_PATTERN +
+		")[^\\n]*\\r?\\n",
+);
 
 export function cleanVisibleStructuredText(text: string): string {
 	return text
@@ -434,21 +458,59 @@ function findStructuredFenceCloseEnd(text: string, start: number): number | null
 	return match ? start + match.index + match[0].length : null;
 }
 
+function isPossibleStructuredFenceOpenerPrefix(text: string): boolean {
+	if (text === "`" || text === "``") return true;
+	if (!text.startsWith("```") || text.includes("\n")) return false;
+	const info = text.slice(3).replace(/^[ \t]*/, "");
+	if (!info) return true;
+	return STRUCTURED_REVIEW_TAGS.some(
+		(tag) => tag.startsWith(info) || info.startsWith(tag),
+	);
+}
+
+function splitTrailingStructuredFencePrefix(text: string): {
+	text: string;
+	prefix: string;
+} {
+	for (let index = 0; index < text.length; index += 1) {
+		if (text[index] !== "`") continue;
+		const candidate = text.slice(index);
+		if (isPossibleStructuredFenceOpenerPrefix(candidate)) {
+			return {
+				text: text.slice(0, index),
+				prefix: candidate,
+			};
+		}
+	}
+	return { text, prefix: "" };
+}
+
 function stripStructuredReviewBlocks(
 	text: string,
 	insideBlock: boolean,
-): { text: string; insideBlock: boolean } {
+	prefix: string,
+	markdownFenceOpen: boolean,
+): {
+	text: string;
+	insideBlock: boolean;
+	prefix: string;
+	markdownFenceOpen: boolean;
+} {
 	let cursor = 0;
 	let visible = "";
 	let hidden = insideBlock;
+	let visibleMarkdownFenceOpen = markdownFenceOpen;
+	const input = prefix + text;
 
-	while (cursor < text.length) {
+	while (cursor < input.length) {
 		if (hidden) {
-			const closeEnd = findStructuredFenceCloseEnd(text, cursor);
+			const closeEnd = findStructuredFenceCloseEnd(input, cursor);
 			if (closeEnd === null) {
 				return {
 					text: cleanVisibleStructuredText(visible),
 					insideBlock: true,
+					prefix: "",
+					markdownFenceOpen: visibleMarkdownFenceOpen,
 				};
 			}
 			cursor = closeEnd;
@@ -456,26 +518,52 @@ function stripStructuredReviewBlocks(
 			continue;
 		}
 
-		STRUCTURED_REVIEW_BLOCK_START_RE.lastIndex = cursor;
-		const startMatch = STRUCTURED_REVIEW_BLOCK_START_RE.exec(text);
-		if (!startMatch) {
-			visible += text.slice(cursor);
-			break;
-		}
-
-		visible += text.slice(cursor, startMatch.index);
-		cursor = startMatch.index + startMatch[0].length;
-		const closeEnd = findStructuredFenceCloseEnd(text, cursor);
-		if (closeEnd === null) {
+		const fenceStart = input.indexOf("```", cursor);
+		if (fenceStart === -1) {
+			const trailing = splitTrailingStructuredFencePrefix(input.slice(cursor));
+			visible += trailing.text;
 			return {
 				text: cleanVisibleStructuredText(visible),
-				insideBlock: true,
+				insideBlock: false,
+				prefix: trailing.prefix,
+				markdownFenceOpen: visibleMarkdownFenceOpen,
 			};
 		}
-		cursor = closeEnd;
+
+		visible += input.slice(cursor, fenceStart);
+		const rest = input.slice(fenceStart);
+		const startMatch = STRUCTURED_REVIEW_BLOCK_OPEN_RE.exec(rest);
+		if (startMatch) {
+			cursor = fenceStart + startMatch[0].length;
+			hidden = true;
+			continue;
+		}
+		if (visibleMarkdownFenceOpen && isPossibleStructuredFenceOpenerPrefix(rest)) {
+			visible += "```";
+			visibleMarkdownFenceOpen = false;
+			cursor = fenceStart + 3;
+			continue;
+		}
+		if (isPossibleStructuredFenceOpenerPrefix(rest)) {
+			return {
+				text: cleanVisibleStructuredText(visible),
+				insideBlock: false,
+				prefix: rest,
+				markdownFenceOpen: visibleMarkdownFenceOpen,
+			};
+		}
+
+		visible += "```";
+		visibleMarkdownFenceOpen = !visibleMarkdownFenceOpen;
+		cursor = fenceStart + 3;
 	}
 
-	return { text: cleanVisibleStructuredText(visible), insideBlock: false };
+	return {
+		text: cleanVisibleStructuredText(visible),
+		insideBlock: hidden,
+		prefix: "",
+		markdownFenceOpen: visibleMarkdownFenceOpen,
+	};
 }
 
 function finishStreamingMessages(chat: ChatMessage[]): ChatMessage[] {
@@ -709,6 +797,8 @@ export const useApp = create<AppState>((set) => ({
 	errors: [],
 	stderr: [],
 	structuredReviewBlockOpen: false,
+	structuredReviewBlockPrefix: "",
+	structuredReviewMarkdownFenceOpen: false,
 	diffFocus: null,
 	diffFocusError: null,
 
@@ -743,6 +833,8 @@ export const useApp = create<AppState>((set) => ({
 				publishedCommentsError: null,
 				streaming: false,
 				structuredReviewBlockOpen: false,
+				structuredReviewBlockPrefix: "",
+				structuredReviewMarkdownFenceOpen: false,
 				diffFocus: null,
 				diffFocusError: null,
 			};
@@ -771,11 +863,14 @@ export const useApp = create<AppState>((set) => ({
 					chatByTab: {},
 					sessionByChatTab: {},
 					chatTabForSession: {},
-				}),
+			}),
 			commentDrafts: [],
 			publishedComments: s?.published_comments ?? [],
 			publishedCommentsFetchedAt: s ? Date.now() : null,
 			publishedCommentsError: s?.published_comments_error ?? null,
+			structuredReviewBlockOpen: false,
+			structuredReviewBlockPrefix: "",
+			structuredReviewMarkdownFenceOpen: false,
 		});
 	},
 	refreshSessionMetadata: (req) =>
@@ -830,6 +925,8 @@ export const useApp = create<AppState>((set) => ({
 			publishedCommentsError: snapshot.published_comments_error,
 			streaming: false,
 			structuredReviewBlockOpen: false,
+			structuredReviewBlockPrefix: "",
+			structuredReviewMarkdownFenceOpen: false,
 			diffFocus: null,
 			diffFocusError: null,
 		});
@@ -862,6 +959,8 @@ export const useApp = create<AppState>((set) => ({
 				publishedCommentsError: null,
 				streaming: false,
 				structuredReviewBlockOpen: false,
+				structuredReviewBlockPrefix: "",
+				structuredReviewMarkdownFenceOpen: false,
 				diffFocus: null,
 				diffFocusError: null,
 			};
@@ -953,6 +1052,9 @@ export const useApp = create<AppState>((set) => ({
 				"section.current_id": state.currentSectionId,
 				"section.processing_ids": state.processingSectionIds.join(","),
 				"section.file_count": normalizedSection.files.length,
+				"section.concern_count": normalizedSection.concerns.length,
+				"section.grill_question_count":
+					normalizedSection.grill_questions.length,
 			});
 			return {
 				sections: nextSections,
@@ -997,6 +1099,7 @@ export const useApp = create<AppState>((set) => ({
 				"section.current_id": state.currentSectionId,
 				"section.file_count": section.files.length,
 				"section.concern_count": section.concerns.length,
+				"section.grill_question_count": section.grill_questions.length,
 			});
 			return {
 				sections: nextSections,
@@ -1093,6 +1196,8 @@ export const useApp = create<AppState>((set) => ({
 			const stripped = stripStructuredReviewBlocks(
 				text,
 				state.structuredReviewBlockOpen,
+				state.structuredReviewBlockPrefix,
+				state.structuredReviewMarkdownFenceOpen,
 			);
 			const visibleText = stripped.text;
 			const messages = state.chatByTab[targetTabId] ?? [];
@@ -1101,10 +1206,14 @@ export const useApp = create<AppState>((set) => ({
 			const withChat = (nextChat: ChatMessage[]) => ({
 				chatByTab: { ...state.chatByTab, [targetTabId]: nextChat },
 				structuredReviewBlockOpen: stripped.insideBlock,
+				structuredReviewBlockPrefix: stripped.prefix,
+				structuredReviewMarkdownFenceOpen: stripped.markdownFenceOpen,
 			});
 			if (!last && !visibleText) {
 				return {
 					structuredReviewBlockOpen: stripped.insideBlock,
+					structuredReviewBlockPrefix: stripped.prefix,
+					structuredReviewMarkdownFenceOpen: stripped.markdownFenceOpen,
 				};
 			}
 			if (last && last.role === "assistant" && last.streaming) {
@@ -1134,6 +1243,8 @@ export const useApp = create<AppState>((set) => ({
 					if (!visibleText) {
 						return {
 							structuredReviewBlockOpen: stripped.insideBlock,
+							structuredReviewBlockPrefix: stripped.prefix,
+							structuredReviewMarkdownFenceOpen: stripped.markdownFenceOpen,
 						};
 					}
 					const response = appendResponseChunkToParts(parts, visibleText);
@@ -1197,6 +1308,8 @@ export const useApp = create<AppState>((set) => ({
 				if (!visibleText) {
 					return {
 						structuredReviewBlockOpen: stripped.insideBlock,
+						structuredReviewBlockPrefix: stripped.prefix,
+						structuredReviewMarkdownFenceOpen: stripped.markdownFenceOpen,
 					};
 				}
 				recordClientTelemetry("client.chat.assistant_message.started", {

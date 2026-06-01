@@ -9,6 +9,8 @@ import { CommentDraftCard } from "./CommentDraftCard";
 import { createDiffFocusRange } from "@/lib/diffFocus";
 import { concernDraftId, concernToDraft } from "@/lib/concernReview";
 import type { Concern } from "@/lib/types/section";
+import type { GrillQuestion } from "@/lib/types/grill";
+import { questionLocation } from "@/lib/sectionFeedback";
 
 export function SectionList() {
 	const sections = useApp((s) => s.sections);
@@ -19,6 +21,7 @@ export function SectionList() {
 	const drafts = useApp((s) => s.commentDrafts);
 	const toggleConcernDraft = useApp((s) => s.toggleConcernDraft);
 	const overviewConcernGroups = sectionConcernGroups(sections);
+	const overviewQuestionGroups = sectionQuestionGroups(sections);
 
 	const openConcernLocation = useCallback(
 		(sectionId: string, concern: Concern) => {
@@ -52,6 +55,24 @@ export function SectionList() {
 		[toggleConcernDraft],
 	);
 
+	const openQuestionLocation = useCallback(
+		(sectionId: string, question: GrillQuestion) => {
+			const location = questionLocation(question);
+			if (!location.file_path || !location.line) return;
+			setCurrent(sectionId, "question_link_clicked");
+			const range = createDiffFocusRange({
+				file_path: location.file_path,
+				start_line: location.line,
+				end_line: location.line,
+				side: "RIGHT",
+				source: "user",
+				mode: "navigation",
+			});
+			if (range) setDiffFocus(range);
+		},
+		[setCurrent, setDiffFocus],
+	);
+
 	return (
 		<aside className="flex h-full min-h-0 min-w-0 flex-col border-r border-border bg-card/30">
 			<div className="border-b border-border px-4 py-3 text-sm font-semibold text-muted-foreground">
@@ -67,6 +88,7 @@ export function SectionList() {
 						const isProcessing = processingIds.includes(s.id);
 						const isSelected = s.id === currentId;
 						const concerns = sectionConcerns(s);
+						const questions = sectionQuestions(s);
 						const showOverviewConcernGroups =
 							s.kind === "pr_description" && isSelected;
 						return (
@@ -137,7 +159,8 @@ export function SectionList() {
 												/>
 											)}
 											{showOverviewConcernGroups &&
-												overviewConcernGroups.length > 0 && (
+												(overviewConcernGroups.length > 0 ||
+													overviewQuestionGroups.length > 0) && (
 													<div className="space-y-3 border-t border-border/40 pt-3">
 														{overviewConcernGroups.map((group) => (
 															<FeedbackList
@@ -155,6 +178,16 @@ export function SectionList() {
 																}
 															/>
 														))}
+														{overviewQuestionGroups.map((group) => (
+															<QuestionList
+																key={group.id}
+																title={`Questions: ${group.title}`}
+																questions={group.questions}
+																onOpenLocation={(question) =>
+																	openQuestionLocation(group.id, question)
+																}
+															/>
+														))}
 													</div>
 												)}
 											{!showOverviewConcernGroups && concerns.length > 0 && (
@@ -169,6 +202,15 @@ export function SectionList() {
 													}
 													onToggleMarked={(concern) =>
 														toggleConcern(s.id, concern)
+													}
+												/>
+											)}
+											{!showOverviewConcernGroups && questions.length > 0 && (
+												<QuestionList
+													title="Questions"
+													questions={questions}
+													onOpenLocation={(question) =>
+														openQuestionLocation(s.id, question)
 													}
 												/>
 											)}
@@ -206,15 +248,91 @@ function CommentDraftsFooter() {
 	);
 }
 
+function QuestionItem({
+	question,
+	onOpenLocation,
+}: {
+	question: GrillQuestion;
+	onOpenLocation: (question: GrillQuestion) => void;
+}) {
+	const location = questionLocation(question);
+	const locationLabel = location.file_path
+		? location.line
+			? `${location.file_path}:${location.line}`
+			: location.file_path
+		: null;
+
+	return (
+		<li className="space-y-1 text-xs">
+			<div>{question.question}</div>
+			{locationLabel && (
+				location.file_path && location.line ? (
+					<button
+						type="button"
+						onClick={() => onOpenLocation(question)}
+						className="block max-w-full truncate font-mono text-[10px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline focus:outline-hidden focus-visible:text-foreground focus-visible:underline"
+						title="Open this line in the diff"
+					>
+						{locationLabel}
+					</button>
+				) : (
+					<div className="font-mono text-[10px] text-muted-foreground">
+						{locationLabel}
+					</div>
+				)
+			)}
+		</li>
+	);
+}
+
+function QuestionList({
+	title,
+	questions,
+	onOpenLocation,
+}: {
+	title: string;
+	questions: GrillQuestion[];
+	onOpenLocation: (question: GrillQuestion) => void;
+}) {
+	if (questions.length === 0) return null;
+	return (
+		<div className="space-y-1.5">
+			<div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+				{title}
+			</div>
+			<ul className="space-y-1.5">
+				{questions.map((question) => (
+					<QuestionItem
+						key={question.question_id}
+						question={question}
+						onOpenLocation={onOpenLocation}
+					/>
+				))}
+			</ul>
+		</div>
+	);
+}
+
 function sectionConcerns(s: SectionState): Concern[] {
 	if (s.kind !== "review_section") return [];
 	return s.section?.concerns ?? [];
+}
+
+function sectionQuestions(s: SectionState): GrillQuestion[] {
+	if (s.kind !== "review_section") return [];
+	return s.section?.grill_questions ?? [];
 }
 
 interface SectionConcernGroup {
 	id: string;
 	title: string;
 	concerns: Concern[];
+}
+
+interface SectionQuestionGroup {
+	id: string;
+	title: string;
+	questions: GrillQuestion[];
 }
 
 function sectionConcernGroups(sections: SectionState[]): SectionConcernGroup[] {
@@ -227,6 +345,21 @@ function sectionConcernGroups(sections: SectionState[]): SectionConcernGroup[] {
 				id: section.id,
 				title: section.title,
 				concerns,
+			},
+		];
+	});
+}
+
+function sectionQuestionGroups(sections: SectionState[]): SectionQuestionGroup[] {
+	return sections.flatMap((section) => {
+		if (section.kind !== "review_section") return [];
+		const questions = sectionQuestions(section);
+		if (questions.length === 0) return [];
+		return [
+			{
+				id: section.id,
+				title: section.title,
+				questions,
 			},
 		];
 	});

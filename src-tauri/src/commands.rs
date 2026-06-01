@@ -140,6 +140,8 @@ Files:
 {published_comment_context}{additional_concerns_hint}
 
 Read the diff for this section with your built-in tools. Identify only real concerns that follow from the actual code. Use simple language.
+Also identify grill-me questions for every meaningful design choice in this section where the PR chose one fork and another plausible fork remains. Concerns and questions are independent: emit questions even when there are no concerns.
+Before asking a grill-me question, inspect surrounding code, callers, docs, and existing patterns. Do not ask if the codebase already answers the fork.
 Use compact, filler-free private notes while analysing. Keep concern text polished, normal, and beginner-friendly.
 
 If the `guided_review_update_section` tool is available, call it once with:
@@ -153,12 +155,24 @@ The block must be feedback-only and must use this shape:
   "section_id": "{section_id}",
   "concerns": [
     {{ "text": "...", "severity": "medium", "file_path": "src/...", "line": 24 }}
+  ],
+  "grill_questions": [
+    {{
+      "question_id": "error-boundary-policy",
+      "title": "Error boundary policy",
+      "question": "Should malformed agent output fail closed?",
+      "pr_choice": "The PR currently falls back to an empty concern list and continues the review.",
+      "recommended_answer": "Fail closed when malformed output makes review state ambiguous.",
+      "file_path": "src/...",
+      "line": 24
+    }}
   ]
 }}
 ```
 
 Do not include `title`, `intent`, `files`, `ranges`, `base_ref`, or `head_ref`.
 If there are no actionable concerns, emit `"concerns": []`.
+If there are no meaningful forked design choices left after codebase inspection, emit `"grill_questions": []`.
 "#,
         repo_path = repo_path.display(),
         base_ref = req.base_ref,
@@ -850,6 +864,26 @@ mod tests {
     }
 
     #[test]
+    fn embedded_agent_skill_documents_inline_grill_questions() {
+        assert!(
+            AGENT_SKILL.contains("\"grill_questions\": ["),
+            "agent skill should document inline grill questions in sections"
+        );
+        assert!(
+            AGENT_SKILL.contains("forked design choice"),
+            "agent skill should require grill questions for forked design choices"
+        );
+        assert!(
+            AGENT_SKILL.contains("Concerns and questions are independent"),
+            "agent skill should not tie grill questions to actionable concerns"
+        );
+        assert!(
+            !AGENT_SKILL.contains("```acp-grill-question"),
+            "agent skill should not document standalone grill question blocks"
+        );
+    }
+
+    #[test]
     fn pr_backed_source_accepts_remote_and_local_pr_sources() {
         assert!(is_pr_backed_source(&SessionSource::Pr {
             repo_url: "https://github.com/garden-co/review".to_string(),
@@ -943,7 +977,11 @@ mod tests {
         assert!(prompt.contains("Existing published comments:\n- Already covered."));
         assert!(prompt.contains("Use compact, filler-free private notes"));
         assert!(prompt.contains("Keep concern text polished, normal, and beginner-friendly"));
+        assert!(prompt.contains("every meaningful design choice"));
+        assert!(prompt.contains("Concerns and questions are independent"));
         assert!(prompt.contains("Emit exactly one final ```acp-section fenced block"));
+        assert!(prompt.contains("\"grill_questions\": ["));
+        assert!(prompt.contains("If there are no meaningful forked design choices"));
         assert!(prompt.contains(
             "Do not include `title`, `intent`, `files`, `ranges`, `base_ref`, or `head_ref`"
         ));

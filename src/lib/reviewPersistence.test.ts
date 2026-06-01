@@ -3,6 +3,7 @@ import test from "node:test";
 import {
 	buildAgentRestoreReviewPrompt,
 	buildUserMessageWithReviewContext,
+	createReviewSnapshot,
 	historySourceFromSavedReview,
 	type SavedReviewRecord,
 	type ReviewSnapshot,
@@ -76,6 +77,7 @@ const snapshot: ReviewSnapshot = {
 						line: 42,
 					},
 				],
+				grill_questions: [],
 				base_ref: "origin/main",
 				head_ref: "guided-review-pr-787",
 				pause_prompt: "Want to comment on this?",
@@ -144,4 +146,111 @@ test("buildUserMessageWithReviewContext adds hidden current section context", ()
 	assert.match(message, /Empty coupon still passes/);
 	assert.match(message, /Already covered/);
 	assert.match(message, /User message:\nExplain this like I'm 10\./);
+});
+
+test("createReviewSnapshot stores inline grill questions with sections", () => {
+	const snapshot = createReviewSnapshot({
+		current_section_id: "api-changes",
+		sections: [
+			{
+				id: "api-changes",
+				kind: "review_section",
+				title: "API changes",
+				intent: "Review the API surface.",
+				status: "in_review",
+				feedbackLoaded: true,
+				section: {
+					schema_version: 1,
+					section_id: "api-changes",
+					title: "API changes",
+					intent: "Review the API surface.",
+					files: ["src-tauri/src/fenced.rs"],
+					ranges: [],
+					concerns: [],
+					grill_questions: [
+						{
+							question_id: "error-boundary-policy",
+							title: "Error boundary policy",
+							question: "Should malformed JSON fail closed?",
+							pr_choice: "The PR keeps the review going.",
+							recommended_answer: "Fail closed when state is ambiguous.",
+							file_path: "src-tauri/src/fenced.rs",
+							line: 24,
+						},
+					],
+					base_ref: "origin/main",
+					head_ref: "feature",
+					pause_prompt: "",
+				},
+			},
+		],
+		comment_drafts: [],
+		published_comments: [],
+		published_comments_error: null,
+	});
+
+	const section = snapshot.sections[0];
+	assert.equal(section?.kind, "review_section");
+	assert.equal(
+		section?.kind === "review_section"
+			? section.section?.grill_questions[0]?.question_id
+			: "",
+		"error-boundary-policy",
+	);
+});
+
+test("buildAgentRestoreReviewPrompt includes inline grill question state without review mode", () => {
+	const grillSnapshot: ReviewSnapshot = {
+		current_section_id: "api-changes",
+		sections: [
+			{
+				id: "api-changes",
+				kind: "review_section",
+				title: "API changes",
+				intent: "Review the API surface.",
+				status: "in_review",
+				feedbackLoaded: true,
+				section: {
+					schema_version: 1,
+					section_id: "api-changes",
+					title: "API changes",
+					intent: "Review the API surface.",
+					files: ["src-tauri/src/fenced.rs"],
+					ranges: [],
+					concerns: [],
+					grill_questions: [
+						{
+							question_id: "error-boundary-policy",
+							title: "Error boundary policy",
+							question: "Should malformed JSON fail closed?",
+							pr_choice: "The PR keeps the review going.",
+							recommended_answer: "Fail closed when state is ambiguous.",
+							file_path: "src-tauri/src/fenced.rs",
+							line: 24,
+							answer_summary: "The user wants this to fail closed.",
+							agrees_with_pr: false,
+							comment_draft_ids: ["draft-123"],
+						},
+					],
+					base_ref: "origin/main",
+					head_ref: "feature",
+					pause_prompt: "",
+				},
+			},
+		],
+		comment_drafts: [],
+		published_comments: [],
+		published_comments_error: null,
+	};
+	const prompt = buildAgentRestoreReviewPrompt({
+		session,
+		savedReview: {
+			...savedReview,
+			snapshot: grillSnapshot,
+		},
+	});
+
+	assert.doesNotMatch(prompt, /review_mode/);
+	assert.match(prompt, /error-boundary-policy/);
+	assert.match(prompt, /The user wants this to fail closed/);
 });

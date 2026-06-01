@@ -64,3 +64,14 @@ test("App forwards response text chunks as response chat", async () => {
 
 	assert.match(source, /kind:\s*p\.kind/);
 });
+
+test("App does not route grill questions as a separate review mode", async () => {
+	const source = await readFile(new URL("./App.tsx", import.meta.url), "utf8");
+
+	assert.doesNotMatch(source, /acp:\/\/grill-question/);
+	assert.doesNotMatch(source, /handleGrillQuestion/);
+	assert.doesNotMatch(source, /parseToolGrillQuestion/);
+	assert.doesNotMatch(source, /upsertGrillQuestion/);
+	assert.doesNotMatch(source, /upsertGrillAnswer/);
+	assert.doesNotMatch(source, /markGrillComplete/);
+});

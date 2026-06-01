@@ -1,15 +1,20 @@
 import type { DiffLineAnnotation } from "@pierre/diffs";
 import type { Concern, ReviewSection, Severity } from "./types/section";
+import type { GrillQuestion } from "./types/grill";
 
-export type SectionFeedbackKind = "concern";
+export type SectionFeedbackKind = "concern" | "grill_question";
 
 export interface SectionFeedbackNote {
 	kind: SectionFeedbackKind;
-	label: "Concern";
+	label: "Concern" | "Question";
 	text: string;
 	severity?: Severity;
 	file_path?: string;
 	line?: number;
+	question_id?: string;
+	title?: string;
+	pr_choice?: string;
+	recommended_answer?: string;
 }
 
 export interface SectionFeedbackAnnotationMetadata {
@@ -37,9 +42,46 @@ function concernNote(concern: Concern): SectionFeedbackNote | null {
 	return note;
 }
 
+export function questionLocation(question: GrillQuestion): {
+	file_path?: string;
+	line?: number;
+} {
+	if (question.file_path && typeof question.line === "number") {
+		return { file_path: question.file_path, line: question.line };
+	}
+	const range = question.ranges?.find(
+		(entry) => entry.kind === "changed-new" || entry.kind === "added",
+	) ?? question.ranges?.[0];
+	return {
+		file_path: question.file_path ?? range?.file_path ?? question.files?.[0],
+		line: question.line ?? range?.start_line,
+	};
+}
+
+function questionNote(question: GrillQuestion): SectionFeedbackNote | null {
+	const text = question.question.trim();
+	if (!text) return null;
+	const location = questionLocation(question);
+	return {
+		kind: "grill_question",
+		label: "Question",
+		question_id: question.question_id,
+		title: question.title,
+		text,
+		pr_choice: question.pr_choice,
+		recommended_answer: question.recommended_answer,
+		file_path: location.file_path,
+		line: location.line,
+	};
+}
+
 function lineFeedbackNotes(section: ReviewSection): SectionFeedbackNote[] {
-	return section.concerns
-		.map((concern) => concernNote(concern))
+	return [
+		...section.concerns.map((concern) => concernNote(concern)),
+		...(section.grill_questions ?? []).map((question) =>
+			questionNote(question),
+		),
+	]
 		.filter((note): note is SectionFeedbackNote => note !== null);
 }
 

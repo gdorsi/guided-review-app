@@ -16,6 +16,14 @@ test("ChatPanel review-section empty state says 'No concerns found for this sect
 	);
 });
 
+test("ChatPanel does not render standalone grill question cards", async () => {
+	const src = await readFile(chatPanelPath, "utf8");
+
+	assert.doesNotMatch(src, /item\.type === "grill_question"/);
+	assert.doesNotMatch(src, /GrillQuestionCard/);
+	assert.doesNotMatch(src, /review_mode: reviewMode/);
+});
+
 test("ChatPanel uses a bottom anchor instead of forcing scrollTop on every update", async () => {
 	const src = await readFile(chatPanelPath, "utf8");
 

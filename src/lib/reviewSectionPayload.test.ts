@@ -51,6 +51,17 @@ test("parseReviewSectionPayload accepts feedback-only sections", () => {
 				line: 148,
 			},
 		],
+		grill_questions: [
+			{
+				question_id: "empty-body-contract",
+				title: "Empty body contract",
+				question: "Should an empty body return 400?",
+				pr_choice: "The PR allows it through.",
+				recommended_answer: "Return 400 before persistence.",
+				file_path: "src/lib/store.ts",
+				line: 148,
+			},
+		],
 		pause_prompt: "Want to leave a comment?",
 	});
 
@@ -64,6 +75,20 @@ test("parseReviewSectionPayload accepts feedback-only sections", () => {
 			severity: "medium",
 			file_path: "src/lib/store.ts",
 			line: 148,
+		},
+	]);
+	assert.deepEqual(section?.grill_questions, [
+		{
+			schema_version: 1,
+			question_id: "empty-body-contract",
+			title: "Empty body contract",
+			question: "Should an empty body return 400?",
+			pr_choice: "The PR allows it through.",
+			recommended_answer: "Return 400 before persistence.",
+			file_path: "src/lib/store.ts",
+			line: 148,
+			files: [],
+			ranges: [],
 		},
 	]);
 	assert.equal(section?.pause_prompt, "Want to leave a comment?");

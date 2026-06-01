@@ -1,6 +1,10 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+fn schema_version_1() -> u32 {
+    1
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
@@ -47,6 +51,8 @@ pub struct ReviewSection {
     #[serde(default)]
     pub ranges: Vec<LineRange>,
     pub concerns: Vec<Concern>,
+    #[serde(default)]
+    pub grill_questions: Vec<GrillQuestion>,
     pub base_ref: String,
     pub head_ref: String,
     pub pause_prompt: String,
@@ -89,6 +95,8 @@ pub struct SectionProgressUpdate {
     pub ranges: Option<Vec<LineRange>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub concerns: Option<Vec<Concern>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grill_questions: Option<Vec<GrillQuestion>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -138,4 +146,27 @@ pub struct CommentResult {
     pub url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct GrillQuestion {
+    #[serde(default = "schema_version_1")]
+    pub schema_version: u32,
+    pub question_id: String,
+    pub title: String,
+    pub question: String,
+    pub pr_choice: String,
+    pub recommended_answer: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
+    #[serde(default)]
+    pub files: Vec<String>,
+    #[serde(default)]
+    pub ranges: Vec<LineRange>,
+    #[serde(default)]
+    pub base_ref: String,
+    #[serde(default)]
+    pub head_ref: String,
 }

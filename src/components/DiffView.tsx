@@ -18,6 +18,7 @@ import {
 	ChevronDown,
 	ChevronRight,
 	LocateFixed,
+	Send,
 	MessageSquare,
 	Sparkles,
 } from "lucide-react";
@@ -45,12 +46,27 @@ import {
 import { MarkdownViewer } from "./MarkdownViewer";
 import { ReviewSummaryView } from "./ReviewSummaryView";
 import { stripMarkdownForSummary } from "@/lib/markdownContent";
+import { Textarea } from "@/components/ui/textarea";
+import { Button } from "@/components/ui/button";
+import {
+	buildUserMessageWithReviewContext,
+	createReviewSnapshot,
+} from "@/lib/reviewPersistence";
 import type { ReviewSection } from "@/lib/types/section";
 
 interface FileBundle {
 	file_path: string;
 	oldText: string;
 	newText: string;
+}
+
+interface DiffTarget {
+	id: string;
+	title: string;
+	intent: string;
+	files: string[];
+	base_ref: string;
+	head_ref: string;
 }
 
 const fileCache = new Map<string, string>();
@@ -60,7 +76,7 @@ type DiffAnnotationMetadata =
 	| SectionFeedbackAnnotationMetadata;
 
 function reviewSectionHasFeedback(section: ReviewSection): boolean {
-	return section.concerns.length > 0;
+	return section.concerns.length > 0 || section.grill_questions.length > 0;
 }
 
 async function fetchFile(
@@ -105,10 +121,21 @@ function isSectionFeedbackAnnotation(
 function SectionFeedbackNoteView({
 	note,
 	showLocation = false,
+	onAnswer,
 }: {
 	note: SectionFeedbackNote;
 	showLocation?: boolean;
+	onAnswer?: (note: SectionFeedbackNote, answer: string) => Promise<void>;
 }) {
+	if (note.kind === "grill_question") {
+		return (
+			<GrillQuestionAnnotation
+				note={note}
+				showLocation={showLocation}
+				onAnswer={onAnswer}
+			/>
+		);
+	}
 	const location = showLocation ? feedbackLocation(note) : null;
 	return (
 		<div className="rounded border border-border/70 bg-background/60 px-2 py-1.5 text-xs">
@@ -126,15 +153,160 @@ function SectionFeedbackNoteView({
 	);
 }
 
+function GrillQuestionAnnotation({
+	note,
+	showLocation = false,
+	onAnswer,
+}: {
+	note: SectionFeedbackNote;
+	showLocation?: boolean;
+	onAnswer?: (note: SectionFeedbackNote, answer: string) => Promise<void>;
+}) {
+	const [answer, setAnswer] = useState("");
+	const [sending, setSending] = useState(false);
+	const textareaRef = useRef<HTMLTextAreaElement>(null);
+	const location = showLocation ? feedbackLocation(note) : null;
+	const questionAnswerPanelClassName =
+		"min-w-0 overflow-hidden rounded border border-border/60 bg-background/60 px-2 py-1.5";
+	const questionAnswerMarkdownClassName =
+		"min-w-0 [overflow-wrap:anywhere] [&_*]:min-w-0 [&_*]:[overflow-wrap:anywhere] [&_code]:whitespace-normal [&_pre]:whitespace-pre-wrap";
+
+	const sendAnswer = useCallback(
+		async (value: string) => {
+			const body = value.trim();
+			if (!body || !onAnswer || sending) return;
+			setSending(true);
+			try {
+				await onAnswer(note, body);
+				setAnswer("");
+			} finally {
+				setSending(false);
+			}
+		},
+		[note, onAnswer, sending],
+	);
+
+	function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+		// Enter sends; Cmd/Ctrl+Enter inserts a newline.
+		if (e.key === "Enter" && !e.shiftKey && !(e.metaKey || e.ctrlKey)) {
+			e.preventDefault();
+			void sendAnswer(answer);
+			return;
+		}
+		if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+			e.preventDefault();
+			const ta = e.currentTarget;
+			const start = ta.selectionStart ?? answer.length;
+			const end = ta.selectionEnd ?? start;
+			const next = answer.slice(0, start) + "\n" + answer.slice(end);
+			setAnswer(next);
+			requestAnimationFrame(() => {
+				if (textareaRef.current) {
+					textareaRef.current.selectionStart = start + 1;
+					textareaRef.current.selectionEnd = start + 1;
+				}
+			});
+		}
+	}
+
+	return (
+		<div className="rounded border border-primary/40 bg-primary/10 px-2 py-2 text-xs">
+			<div className="mb-1 flex flex-wrap items-center gap-1.5 text-[10px] font-medium uppercase tracking-wider text-primary">
+				<span>{note.label}</span>
+				{location && (
+					<span className="font-mono normal-case tracking-normal">
+						{location}
+					</span>
+				)}
+			</div>
+			{note.title && (
+				<div className="mb-1 font-semibold text-foreground">{note.title}</div>
+			)}
+			<div className="mb-2 whitespace-pre-wrap text-foreground">{note.text}</div>
+			<div className="mb-2 grid min-w-0 grid-cols-1 gap-2 lg:grid-cols-2">
+				<div className={questionAnswerPanelClassName}>
+					<div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+						PR choice
+					</div>
+					<MarkdownViewer
+						markdown={note.pr_choice ?? ""}
+						className={questionAnswerMarkdownClassName}
+					/>
+				</div>
+				<div className={questionAnswerPanelClassName}>
+					<div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+						Recommended answer
+					</div>
+					<MarkdownViewer
+						markdown={note.recommended_answer ?? ""}
+						className={questionAnswerMarkdownClassName}
+					/>
+				</div>
+			</div>
+			<div className="mb-2 flex flex-wrap gap-2">
+				<Button
+					type="button"
+					size="sm"
+					variant="outline"
+					onClick={() => void sendAnswer(note.pr_choice ?? "")}
+					disabled={sending || !onAnswer || !note.pr_choice}
+					className="h-7"
+				>
+					Agree with PR
+				</Button>
+				<Button
+					type="button"
+					size="sm"
+					variant="outline"
+					onClick={() => void sendAnswer(note.recommended_answer ?? "")}
+					disabled={sending || !onAnswer || !note.recommended_answer}
+					className="h-7"
+				>
+					Use recommendation
+				</Button>
+			</div>
+			<div className="space-y-1.5">
+				<Textarea
+					ref={textareaRef}
+					value={answer}
+					onChange={(e) => setAnswer(e.target.value)}
+					onKeyDown={onKeyDown}
+					placeholder="Write a free-form answer…  (Enter to send · ⌘+Enter for newline)"
+					disabled={sending || !onAnswer}
+					rows={3}
+				/>
+				<div className="flex justify-end">
+					<Button
+						type="button"
+						size="sm"
+						onClick={() => void sendAnswer(answer)}
+						disabled={sending || !answer.trim() || !onAnswer}
+						className="h-7"
+					>
+						<Send className="size-3.5" />
+						Send
+					</Button>
+				</div>
+			</div>
+		</div>
+	);
+}
+
 function SectionFeedbackAnnotation({
 	notes,
+	onAnswer,
 }: {
 	notes: SectionFeedbackNote[];
+	onAnswer?: (note: SectionFeedbackNote, answer: string) => Promise<void>;
 }) {
 	return (
 		<div className="space-y-1 border-l-2 border-primary bg-primary/10 px-2 py-1.5">
 			{notes.map((note, index) => (
-				<SectionFeedbackNoteView key={index} note={note} />
+				<SectionFeedbackNoteView
+					key={index}
+					note={note}
+					onAnswer={onAnswer}
+				/>
 			))}
 		</div>
 	);
@@ -245,7 +417,10 @@ export function DiffPane() {
 	const startSectionProcessing = useApp((s) => s.startSectionProcessing);
 	const finishSectionProcessing = useApp((s) => s.finishSectionProcessing);
 	const pushError = useApp((s) => s.pushError);
+	const addUserMessage = useApp((s) => s.addUserMessage);
+	const commentDrafts = useApp((s) => s.commentDrafts);
 	const publishedComments = useApp((s) => s.publishedComments);
+	const publishedCommentsError = useApp((s) => s.publishedCommentsError);
 
 	const deferredCurrentId = useDeferredValue(currentId);
 
@@ -255,6 +430,19 @@ export function DiffPane() {
 	);
 	const section =
 		current?.kind === "review_section" ? current.section ?? null : null;
+	const diffTarget = useMemo<DiffTarget | null>(() => {
+		if (current?.kind === "review_section" && current.section) {
+			return {
+				id: current.id,
+				title: current.title,
+				intent: current.intent,
+				files: current.section.files,
+				base_ref: current.section.base_ref,
+				head_ref: current.section.head_ref,
+			};
+		}
+		return null;
+	}, [current]);
 	const currentReviewId = current?.kind === "review_section" ? current.id : null;
 	const sectionIsProcessing = currentReviewId
 		? processingSectionIds.includes(currentReviewId)
@@ -332,6 +520,69 @@ export function DiffPane() {
 		publishedComments,
 		pushError,
 	]);
+	const sendGrillQuestionAnswer = useCallback(
+		async (note: SectionFeedbackNote, answer: string) => {
+			if (!session || current?.kind !== "review_section") return;
+			const body = [
+				`Answered inline review question "${note.title ?? note.question_id ?? "question"}".`,
+				"",
+				`Question ID: ${note.question_id ?? ""}`,
+				`Section ID: ${current.id}`,
+				`Question: ${note.text}`,
+				`PR choice: ${note.pr_choice ?? ""}`,
+				`Recommended answer: ${note.recommended_answer ?? ""}`,
+				"",
+				"Answer:",
+				answer,
+				"",
+				"If this answer does not agree with the PR choice, store the disagreement as PR comment draft(s) to submit.",
+			].join("\n");
+			addUserMessage(body);
+			const snapshot = createReviewSnapshot({
+				current_section_id: current.id,
+				sections,
+				comment_drafts: commentDrafts,
+				published_comments: publishedComments,
+				published_comments_error: publishedCommentsError,
+			});
+			const message = buildUserMessageWithReviewContext({
+				userText: body,
+				session,
+				snapshot,
+			});
+			try {
+				recordClientTelemetry("client.diff.grill_answer.send_requested", {
+					"acp.session_id": session.session_id,
+					"section.id": current.id,
+					"grill.question_id": note.question_id,
+					"message.length": answer.length,
+				});
+				await acp.sendMessage(session.session_id, message, {
+					origin: "diff_inline_grill_question",
+					reason: "user_reply",
+					sectionId: current.id,
+					suppressPreview: true,
+				});
+			} catch (e) {
+				recordClientTelemetryError("client.diff.grill_answer.send_failed", e, {
+					"acp.session_id": session.session_id,
+					"section.id": current.id,
+					"grill.question_id": note.question_id,
+				});
+				pushError(`send_message failed: ${e}`);
+			}
+		},
+		[
+			session,
+			current,
+			addUserMessage,
+			sections,
+			commentDrafts,
+			publishedComments,
+			publishedCommentsError,
+			pushError,
+		],
+	);
 	const visibleFilePaths = useMemo(
 		() => new Set(bundles.map((bundle) => bundle.file_path)),
 		[bundles],
@@ -394,7 +645,7 @@ export function DiffPane() {
 	}, [publishedComments, sectionFeedbackAnnotations, visibleFilePaths]);
 
 	const autoExpandedSectionsRef = useRef<Set<string>>(new Set());
-	const sectionId = section?.section_id ?? null;
+	const sectionId = diffTarget?.id ?? null;
 	const allFilePaths = useMemo(
 		() => bundles.map((bundle) => bundle.file_path),
 		[bundles],
@@ -562,7 +813,10 @@ export function DiffPane() {
 		) => {
 			if (isSectionFeedbackAnnotation(annotation.metadata)) {
 				return (
-					<SectionFeedbackAnnotation notes={annotation.metadata.notes} />
+					<SectionFeedbackAnnotation
+						notes={annotation.metadata.notes}
+						onAnswer={sendGrillQuestionAnswer}
+					/>
 				);
 			}
 			const { comment } = annotation.metadata;
@@ -583,7 +837,7 @@ export function DiffPane() {
 				</div>
 			);
 		},
-		[],
+		[sendGrillQuestionAnswer],
 	);
 
 	const renderHeaderPrefix = useCallback(
@@ -698,10 +952,10 @@ export function DiffPane() {
 			"acp.session_id": session?.session_id,
 			"section.current_id": deferredCurrentId,
 			"section.has_entry": !!current,
-			"section.has_payload": !!section,
-			"section.file_count": section?.files.length,
+			"section.has_payload": !!diffTarget,
+			"section.file_count": diffTarget?.files.length,
 		});
-		if (!session || !section) {
+		if (!session || !diffTarget) {
 			setBundles([]);
 			return;
 		}
@@ -712,25 +966,25 @@ export function DiffPane() {
 			try {
 				recordClientTelemetry("client.diff.section_load.started", {
 					"acp.session_id": session.session_id,
-					"section.id": section.section_id,
-					"section.file_count": section.files.length,
+					"section.id": diffTarget.id,
+					"section.file_count": diffTarget.files.length,
 				});
 				const out: FileBundle[] = [];
-				for (const file of section.files) {
+				for (const file of diffTarget.files) {
 					recordClientTelemetry("client.diff.file_load.started", {
 						"acp.session_id": session.session_id,
-						"section.id": section.section_id,
+						"section.id": diffTarget.id,
 						"file.path": file,
-						"repo.base_ref": section.base_ref,
-						"repo.head_ref": section.head_ref,
+						"repo.base_ref": diffTarget.base_ref,
+						"repo.head_ref": diffTarget.head_ref,
 					});
 					const [oldText, newText] = await Promise.all([
-						fetchFile(session.repo.path, file, section.base_ref),
-						fetchFile(session.repo.path, file, section.head_ref),
+						fetchFile(session.repo.path, file, diffTarget.base_ref),
+						fetchFile(session.repo.path, file, diffTarget.head_ref),
 					]);
 					recordClientTelemetry("client.diff.file_load.finished", {
 						"acp.session_id": session.session_id,
-						"section.id": section.section_id,
+						"section.id": diffTarget.id,
 						"file.path": file,
 						"file.old_length": oldText.length,
 						"file.new_length": newText.length,
@@ -742,7 +996,7 @@ export function DiffPane() {
 				if (!cancelled) {
 					recordClientTelemetry("client.diff.section_load.succeeded", {
 						"acp.session_id": session.session_id,
-						"section.id": section.section_id,
+						"section.id": diffTarget.id,
 						"diff.bundle_count": out.length,
 					});
 					setBundles(out);
@@ -751,7 +1005,7 @@ export function DiffPane() {
 				if (!cancelled) {
 					recordClientTelemetryError("client.diff.section_load.failed", e, {
 						"acp.session_id": session.session_id,
-						"section.id": section.section_id,
+						"section.id": diffTarget.id,
 					});
 					setLoadError(String(e));
 				}
@@ -762,7 +1016,7 @@ export function DiffPane() {
 		return () => {
 			cancelled = true;
 		};
-	}, [session, section, current, deferredCurrentId]);
+	}, [session, diffTarget, current, deferredCurrentId]);
 
 	if (!session || !current) {
 		return (
@@ -815,7 +1069,7 @@ export function DiffPane() {
 		return <ReviewSummaryView />;
 	}
 
-	if (current && !section) {
+	if (current.kind === "review_section" && !section) {
 		return (
 			<section
 				ref={scrollContainerRef}
@@ -878,7 +1132,7 @@ export function DiffPane() {
 					!codeViewState.error &&
 					bundles.length === 0 &&
 					sectionIsProcessing &&
-					section!.files.length === 0 && (
+					(diffTarget?.files.length ?? 0) === 0 && (
 						<div className="rounded-md border border-border bg-card/40 px-4 py-3 text-sm text-muted-foreground">
 							Agent is finding files and ranges for this section…
 						</div>
@@ -887,7 +1141,7 @@ export function DiffPane() {
 					!loadError &&
 					!codeViewState.error &&
 					bundles.length === 0 &&
-					!(sectionIsProcessing && section!.files.length === 0) && (
+					!(sectionIsProcessing && (diffTarget?.files.length ?? 0) === 0) && (
 						<div className="rounded-md border border-border bg-card/40 px-4 py-3 text-sm text-muted-foreground">
 							No textual changes in the listed files.
 						</div>

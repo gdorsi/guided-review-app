@@ -9,6 +9,7 @@ import type {
 	SectionMapEntry,
 	Severity,
 } from "./types/section";
+import type { GrillQuestion } from "./types/grill";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
 	return value && typeof value === "object"
@@ -97,6 +98,36 @@ function parseConcern(value: unknown): Concern | null {
 	};
 }
 
+function parseGrillQuestion(value: unknown): GrillQuestion | null {
+	const record = asRecord(value);
+	if (!record) return null;
+	const question_id = asString(record.question_id);
+	const title = asString(record.title);
+	const question = asString(record.question);
+	const pr_choice = asString(record.pr_choice);
+	const recommended_answer = asString(record.recommended_answer);
+	if (!question_id || !title || !question || !pr_choice || !recommended_answer) {
+		return null;
+	}
+	const item: GrillQuestion = {
+		schema_version: 1,
+		question_id,
+		title,
+		question,
+		pr_choice,
+		recommended_answer,
+		file_path: asString(record.file_path) ?? undefined,
+		line: asNumber(record.line) ?? undefined,
+		files: asStringArray(record.files),
+		ranges: parseArray(record.ranges, parseLineRange),
+	};
+	const base_ref = asString(record.base_ref);
+	const head_ref = asString(record.head_ref);
+	if (base_ref) item.base_ref = base_ref;
+	if (head_ref) item.head_ref = head_ref;
+	return item;
+}
+
 function parseArray<T>(
 	value: unknown,
 	parse: (entry: unknown) => T | null,
@@ -142,6 +173,7 @@ export function parseReviewSectionPayload(
 		files: asStringArray(record.files),
 		ranges: parseArray(record.ranges, parseLineRange),
 		concerns: parseArray(record.concerns, parseConcern),
+		grill_questions: parseArray(record.grill_questions, parseGrillQuestion),
 		base_ref: asString(record.base_ref) ?? "",
 		head_ref: asString(record.head_ref) ?? "",
 		pause_prompt: asString(record.pause_prompt) ?? "",
@@ -164,6 +196,10 @@ export function parseSectionProgressPayload(
 	const intent = asString(record.intent);
 	const ranges = parseOptionalArray(record.ranges, parseLineRange);
 	const concerns = parseOptionalArray(record.concerns, parseConcern);
+	const grill_questions = parseOptionalArray(
+		record.grill_questions,
+		parseGrillQuestion,
+	);
 	const base_ref = asString(record.base_ref);
 	const head_ref = asString(record.head_ref);
 	if (title) update.title = title;
@@ -171,6 +207,7 @@ export function parseSectionProgressPayload(
 	if (Array.isArray(record.files)) update.files = asStringArray(record.files);
 	if (ranges) update.ranges = ranges;
 	if (concerns) update.concerns = concerns;
+	if (grill_questions) update.grill_questions = grill_questions;
 	if (base_ref) update.base_ref = base_ref;
 	if (head_ref) update.head_ref = head_ref;
 	return update;
