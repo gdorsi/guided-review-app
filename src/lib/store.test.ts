@@ -1487,3 +1487,27 @@ test("applyCommentResult updates the draft in place instead of removing it", asy
 	assert.equal(draft?.marked, true);
 	assert.equal(draft?.url, "https://github.com/o/r/pull/1#discussion_r1");
 });
+
+test("toggleConcernDraft adds a marked draft, then removes it", async () => {
+	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
+	await resetReviewState();
+
+	const draft = {
+		kind: "inline" as const,
+		body: "[medium] Null check",
+		file_path: "a.ts",
+		line: 4,
+		side: "RIGHT" as const,
+	};
+
+	useApp.getState().toggleConcernDraft("concern:sec1:a.ts:4:abc", draft);
+	let drafts = useApp.getState().commentDrafts;
+	assert.equal(drafts.length, 1);
+	assert.equal(drafts[0]?.id, "concern:sec1:a.ts:4:abc");
+	assert.equal(drafts[0]?.marked, true);
+	assert.equal(drafts[0]?.status, "pending");
+
+	useApp.getState().toggleConcernDraft("concern:sec1:a.ts:4:abc", draft);
+	drafts = useApp.getState().commentDrafts;
+	assert.equal(drafts.length, 0);
+});

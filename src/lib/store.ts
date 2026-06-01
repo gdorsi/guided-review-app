@@ -253,6 +253,7 @@ interface AppState {
 	updateCommentDraft: (id: string, patch: Partial<CommentDraftState>) => void;
 	editCommentDraftBody: (id: string, body: string) => void;
 	setCommentMarked: (id: string, marked: boolean) => void;
+	toggleConcernDraft: (id: string, draft: CommentDraft) => void;
 	dismissCommentDraft: (id: string) => void;
 	applyCommentResult: (result: CommentResult) => void;
 
@@ -1329,6 +1330,20 @@ export const useApp = create<AppState>((set) => ({
 				d.id === id ? { ...d, marked } : d,
 			),
 		})),
+	toggleConcernDraft: (id, draft) =>
+		set((state) => {
+			if (state.commentDrafts.some((d) => d.id === id)) {
+				return {
+					commentDrafts: state.commentDrafts.filter((d) => d.id !== id),
+				};
+			}
+			return {
+				commentDrafts: [
+					...state.commentDrafts,
+					{ id, draft, marked: true, status: "pending" },
+				],
+			};
+		}),
 	dismissCommentDraft: (id) =>
 		set((state) => ({
 			commentDrafts: state.commentDrafts.filter((d) => d.id !== id),
