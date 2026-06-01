@@ -929,7 +929,7 @@ export function DiffPane() {
 						renderAnnotation={renderAnnotation}
 						renderHeaderPrefix={renderHeaderPrefix}
 						renderHeaderMetadata={renderHeaderMetadata}
-						className="mx-4 mb-4 min-h-0 flex-1 rounded-md border border-border bg-card"
+						className="mx-4 mb-4 min-h-0 flex-1 overflow-x-hidden overflow-y-auto rounded-md border border-border bg-card"
 					/>
 				)}
 		</section>
