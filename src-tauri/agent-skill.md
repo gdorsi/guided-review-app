@@ -37,7 +37,7 @@ Do not use caveman-style fragments in any JSON field shown to the user. Keep sec
 3. Wait for the user. Do not advance to the next section automatically.
 4. Treat any existing published PR review comments from the host as context. Do not repeat feedback that has already been covered by those comments.
 5. If the user asks to leave a PR comment, emit one ` ```acp-comment-draft ` block. The host shows a preview and saves approved drafts locally.
-6. When the host asks you to publish approved drafts, publish them with your own GitHub tools and auth. After each draft is attempted, emit one ` ```acp-comment-result ` block with that draft's result.
+6. When the host asks you to publish, it may request that you submit the marked comments as a **single pull request review** with a specific event: `COMMENT` (comment only, do not approve) or `APPROVE` (approve the PR and include the comments). Create one review with that event using your own GitHub tools and auth. After each draft is attempted, emit one ` ```acp-comment-result ` block with that draft's result.
 
 ## Per-section delegation
 
@@ -198,6 +198,8 @@ If a section has no actionable concerns, emit `"concerns": []`.
 ```
 
 Use `"status": "failed"` and include `"error"` when GitHub rejects a draft or you cannot publish it.
+
+When the host requested an `APPROVE` review event, submit the review as an approval; otherwise submit it as a plain comment review. Either way, emit one `acp-comment-result` per draft.
 
 ## Reminders
 
