@@ -64,7 +64,7 @@ test("buildSectionChatKickoffPrefix includes read-code and comment protocol inst
 	assert.match(prompt, /When the user asks to leave a PR comment/);
 	assert.match(prompt, /```acp-comment-draft/);
 	assert.match(prompt, /"kind": "inline"/);
-	assert.match(prompt, /When the host asks you to publish approved drafts/);
+	assert.match(prompt, /When the host asks you to submit the review/);
 	assert.match(prompt, /```acp-comment-result/);
 });
 

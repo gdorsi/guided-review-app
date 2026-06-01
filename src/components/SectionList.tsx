@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback } from "react";
 import { useApp, type SectionState } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { LoaderCircle } from "lucide-react";
@@ -6,13 +6,7 @@ import { stripMarkdownForSummary } from "@/lib/markdownContent";
 import { MarkdownViewer } from "./MarkdownViewer";
 import { FeedbackList } from "./Concerns";
 import { CommentDraftCard } from "./CommentDraftCard";
-import { Button } from "@/components/ui/button";
 import { createDiffFocusRange } from "@/lib/diffFocus";
-import { acp } from "@/lib/acp";
-import {
-	prTargetFromSessionSource,
-	requestAgentPublishApprovedDrafts,
-} from "@/lib/commentPublish";
 import type { Concern } from "@/lib/types/section";
 
 export function SectionList() {
@@ -145,44 +139,15 @@ export function SectionList() {
 }
 
 function CommentDraftsFooter() {
-	const session = useApp((s) => s.session);
 	const drafts = useApp((s) => s.commentDrafts);
-	const pushError = useApp((s) => s.pushError);
-	const updateCommentDraft = useApp((s) => s.updateCommentDraft);
-	const [publishing, setPublishing] = useState(false);
-	const hasApproved = drafts.some((d) => d.status === "approved");
-
-	async function submit() {
-		if (!session || publishing) return;
-		const target = prTargetFromSessionSource(session.source);
-		if (!target) {
-			pushError("PR target unknown.");
-			return;
-		}
-		setPublishing(true);
-		try {
-			await requestAgentPublishApprovedDrafts({
-				session_id: session.session_id,
-				target,
-				head_sha: session.repo.head_sha,
-				comment_drafts: drafts,
-				updateCommentDraft,
-				sendMessage: acp.sendMessage,
-			});
-		} catch (e) {
-			const message = e instanceof Error ? e.message : String(e);
-			pushError(message || "Could not ask the agent to publish the comments.");
-		} finally {
-			setPublishing(false);
-		}
-	}
+	const markedCount = drafts.filter((d) => d.marked).length;
 
 	return (
 		<div className="flex max-h-[45%] flex-col border-t border-border bg-card/50">
 			<div className="flex items-center justify-between border-b border-border px-4 py-2 text-sm font-semibold text-muted-foreground">
-				<span>Comments to submit</span>
+				<span>Comments</span>
 				<span className="rounded-full bg-primary/15 px-2 py-0.5 text-[10px] font-medium text-primary">
-					{drafts.length}
+					{markedCount}/{drafts.length} marked
 				</span>
 			</div>
 			<div className="flex flex-col gap-2 overflow-y-auto px-3 py-2">
@@ -190,21 +155,6 @@ function CommentDraftsFooter() {
 					<CommentDraftCard key={d.id} state={d} />
 				))}
 			</div>
-			{hasApproved && (
-				<div className="border-t border-border px-3 py-2">
-					<Button
-						size="sm"
-						onClick={submit}
-						disabled={publishing}
-						className="w-full"
-					>
-						{publishing ? (
-							<LoaderCircle className="size-3.5 animate-spin" />
-						) : null}
-						Submit approved comments
-					</Button>
-				</div>
-			)}
 		</div>
 	);
 }
