@@ -6,6 +6,7 @@ import { stripMarkdownForSummary } from "@/lib/markdownContent";
 import { MarkdownViewer } from "./MarkdownViewer";
 import { FeedbackList } from "./Concerns";
 import { CommentDraftCard } from "./CommentDraftCard";
+import { SubmitReviewButton } from "./SubmitReviewButton";
 import { createDiffFocusRange } from "@/lib/diffFocus";
 import { concernDraftId, concernToDraft } from "@/lib/concernReview";
 import type { Concern } from "@/lib/types/section";
@@ -243,6 +244,9 @@ function CommentDraftsFooter() {
 				{drafts.map((d) => (
 					<CommentDraftCard key={d.id} state={d} />
 				))}
+			</div>
+			<div className="border-t border-border px-3 py-2">
+				<SubmitReviewButton compact />
 			</div>
 		</div>
 	);

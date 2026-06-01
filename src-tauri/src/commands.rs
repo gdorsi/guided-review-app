@@ -147,6 +147,11 @@ Use compact, filler-free private notes while analysing. Keep concern text polish
 If the `guided_review_update_section` tool is available, call it once with:
 {{"section_id":"{section_id}","phase":"started"}}
 
+After each newly verified concern or grill-me question, call `guided_review_update_section` with `"phase":"feedback"`.
+Every feedback update must be a cumulative snapshot containing the full verified `concerns` and full verified `grill_questions` arrays discovered so far:
+{{"section_id":"{section_id}","phase":"feedback","concerns":[...],"grill_questions":[...]}}
+Do not stream raw sub-agent findings or unverified guesses.
+
 Emit exactly one final ```acp-section fenced block and no prose outside it.
 The block must be feedback-only and must use this shape:
 
@@ -950,6 +955,16 @@ mod tests {
             AGENT_SKILL.contains("section `title`, section `intent`, concern `text`"),
             "agent skill should name the user-visible fields that stay well written"
         );
+        assert!(
+            !AGENT_SKILL.contains("Do not progressive-stream the sub-agent's intermediate work"),
+            "agent skill should no longer forbid progressive verified feedback"
+        );
+        assert!(
+            AGENT_SKILL.contains(
+                "Progressive feedback updates are allowed only after parent-side verification"
+            ),
+            "agent skill should require verification before progressive feedback"
+        );
     }
 
     #[test]
@@ -979,6 +994,10 @@ mod tests {
         assert!(prompt.contains("Keep concern text polished, normal, and beginner-friendly"));
         assert!(prompt.contains("every meaningful design choice"));
         assert!(prompt.contains("Concerns and questions are independent"));
+        assert!(prompt.contains("After each newly verified concern or grill-me question"));
+        assert!(prompt.contains("\"phase\":\"feedback\""));
+        assert!(prompt.contains("cumulative snapshot"));
+        assert!(prompt.contains("full verified `concerns` and full verified `grill_questions`"));
         assert!(prompt.contains("Emit exactly one final ```acp-section fenced block"));
         assert!(prompt.contains("\"grill_questions\": ["));
         assert!(prompt.contains("If there are no meaningful forked design choices"));

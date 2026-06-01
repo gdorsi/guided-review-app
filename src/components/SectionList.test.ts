@@ -31,3 +31,14 @@ test("SectionList shows grill questions as question-only section feedback", asyn
 	assert.doesNotMatch(source, /Agree with PR/);
 	assert.doesNotMatch(source, /Use recommendation/);
 });
+
+test("SectionList renders the compact submit action in the comments footer", async () => {
+	const source = await readFile(
+		new URL("./SectionList.tsx", import.meta.url),
+		"utf8",
+	);
+
+	assert.match(source, /import \{ SubmitReviewButton \} from "\.\/SubmitReviewButton";/);
+	assert.match(source, /function CommentDraftsFooter/);
+	assert.match(source, /<SubmitReviewButton compact \/>/);
+});

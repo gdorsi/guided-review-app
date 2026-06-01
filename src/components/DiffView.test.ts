@@ -142,6 +142,16 @@ test("DiffView offers a feedback request for preview-only sections", async () =>
 	assert.match(source, /feedbackLoaded/);
 });
 
+test("DiffView does not render a synthetic Review Summary section", async () => {
+	const source = await readFile(
+		new URL("./DiffView.tsx", import.meta.url),
+		"utf8",
+	);
+
+	assert.doesNotMatch(source, /ReviewSummaryView/);
+	assert.doesNotMatch(source, /review_summary/);
+});
+
 test("DiffView renders grill questions as answerable inline annotations", async () => {
 	const source = await readFile(
 		new URL("./DiffView.tsx", import.meta.url),
@@ -155,6 +165,10 @@ test("DiffView renders grill questions as answerable inline annotations", async 
 	assert.match(source, /questionAnswerPanelClassName/);
 	assert.match(source, /min-w-0/);
 	assert.match(source, /overflow-wrap:anywhere/);
+	assert.match(source, /white-space:break-spaces/);
 	assert.match(source, /sendGrillQuestionAnswer/);
+	assert.match(source, /onAnswer=\{sendGrillQuestionAnswer\}/);
+	assert.match(source, /note\.pr_choice \?\? ""/);
+	assert.match(source, /note\.recommended_answer \?\? ""/);
 	assert.doesNotMatch(source, /current\?\.kind === "grill_question"/);
 });

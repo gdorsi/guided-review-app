@@ -33,7 +33,7 @@ Do not use caveman-style fragments in any JSON field shown to the user. Keep sec
 ## Workflow
 
 1. On the **first turn**, emit one ` ```acp-section-map ` block describing the planned sections and the files each section covers. If the host explicitly says there is no GitHub PR description, emit one ` ```acp-pr-description ` block before the section map. Then stop.
-2. When the user asks to see a section (or says "go ahead"), delegate the analysis to a sub-agent if one is available (see "Per-section delegation"); otherwise inspect the section yourself. Then emit one final feedback-only ` ```acp-section ` block for that section. Include both actionable concerns and grill-me questions for every meaningful forked design choice where the PR chose one path and another plausible path remains. Concerns and questions are independent: ask questions even when there are no concerns. Then stop. Render concerns and questions via the JSON fields — do not duplicate them in prose.
+2. When the user asks to see a section (or says "go ahead"), delegate the analysis to a sub-agent if one is available (see "Per-section delegation"); otherwise inspect the section yourself. Stream each newly verified concern or grill-me question through `guided_review_update_section` when that tool is available. Then emit one final feedback-only ` ```acp-section ` block for that section. Include both actionable concerns and grill-me questions for every meaningful forked design choice where the PR chose one path and another plausible path remains. Concerns and questions are independent: ask questions even when there are no concerns. Then stop. Render concerns and questions via the JSON fields — do not duplicate them in prose.
 3. Wait for the user. Do not advance to the next section automatically. If the user answers a grill-me question, use that answer as context; when it disagrees with the PR choice, emit `acp-comment-draft` blocks for the comments that should be submitted.
 4. Treat any existing published PR review comments from the host as context. Do not repeat feedback that has already been covered by those comments.
 5. If the user asks to leave a PR comment, emit one ` ```acp-comment-draft ` block. The host shows a preview and saves approved drafts locally.
@@ -44,6 +44,8 @@ Do not use caveman-style fragments in any JSON field shown to the user. Keep sec
 If you have a `Task` tool (or any sub-agent dispatcher that runs a fresh agent in this same repo), use it for every section walkthrough. The sub-agent does the reading and analysis; you stay responsible for verifying and emitting the structured output. If no such tool is available (for example, when running as Codex), do the analysis yourself in this turn using the same seven-pillar rubric and single-channel output described below, and apply the parent false-positive pass to your own findings (you are both author and verifier).
 
 Before dispatching, if `guided_review_update_section` is available, call it exactly once with `"phase": "started"` and the `section_id` so the UI can show a processing state while the sub-agent works.
+
+Progressive feedback updates are allowed only after parent-side verification. Never stream raw sub-agent findings or unverified guesses to the host.
 
 Sub-agent prompt (pass as the task description, filling the placeholders from the section map and the repo metadata you were given at session start):
 
@@ -103,7 +105,7 @@ For **every** entry in `grill_questions`, perform a parent-side fork check:
 2. Inspect surrounding code, callers, docs, and existing patterns to confirm the answer is not already determined.
 3. Confirm the fork is meaningful enough to ask the user; drop trivia, style-only preferences, and questions whose answer would not change the review outcome.
 
-Drop any concern or question that fails its check. Do not surface a "removed" list — silent filtering keeps the section output focused. Only surviving entries are written into the final `acp-section` block alongside `section_id`. If the sub-agent's JSON is malformed or every concern and question is filtered out, emit `"concerns": []` and `"grill_questions": []`. Do not progressive-stream the sub-agent's intermediate work; you have nothing incremental to share. If the sub-agent fails outright, do the analysis yourself in this same turn under the same rubric and emit the block as usual.
+Drop any concern or question that fails its check. Do not surface a "removed" list — silent filtering keeps the section output focused. After each surviving concern or question passes its parent-side check, if `guided_review_update_section` is available, call it with `"phase": "feedback"` and cumulative full arrays of every verified `concerns` and `grill_questions` entry found so far. Only surviving entries are written into the final `acp-section` block alongside `section_id`. If the sub-agent's JSON is malformed or every concern and question is filtered out, emit `"concerns": []` and `"grill_questions": []`. If the sub-agent fails outright, do the analysis yourself in this same turn under the same rubric and emit the block as usual.
 
 ## Non-negotiables
 
@@ -158,7 +160,7 @@ The app derives changed line ranges from local Git for these files. Do not inclu
 
 `acp-section` is feedback only. Do not include `title`, `intent`, `files`, `ranges`, `base_ref`, or `head_ref`; the host already owns those from the section map and local Git.
 
-If the `guided_review_update_section` tool is available, you may call it for feedback fields. Do not use it for files or ranges. When you delegate analysis to a sub-agent (see "Per-section delegation"), use only `"phase": "started"` before dispatching and skip progressive `"feedback"` calls — you have nothing incremental to share until the sub-agent returns. When you do the analysis directly, you may make progressive calls as you work.
+If the `guided_review_update_section` tool is available, you may call it for feedback fields. Do not use it for files or ranges. After each newly verified concern or grill-me question, call it with `"phase": "feedback"` and a cumulative snapshot containing the full verified `concerns` and full verified `grill_questions` arrays so far. When you delegate analysis to a sub-agent (see "Per-section delegation"), stream only after your parent-side checks pass. When you do the analysis directly, stream only after your own checks pass.
 
 Tool input shape:
 

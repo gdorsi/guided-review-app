@@ -338,32 +338,29 @@ function restoreSectionFeedbackLoaded(section: SectionState): SectionState {
 	};
 }
 
-function reviewSummarySection(): ReviewSummarySectionState {
-	return {
-		id: REVIEW_SUMMARY_SECTION_ID,
-		kind: "review_summary",
-		title: "Review Summary",
-		intent: "Marked comments and submit your review.",
-		status: "in_review",
-	};
-}
-
-function withReviewSummaryLast(sections: SectionState[]): SectionState[] {
-	const withoutSummary = sections.filter((s) => s.kind !== "review_summary");
-	return [...withoutSummary, reviewSummarySection()];
+function withoutReviewSummarySections(sections: SectionState[]): SectionState[] {
+	return sections.filter((s) => s.kind !== "review_summary");
 }
 
 function insertReviewSection(
 	sections: SectionState[],
 	updated: ReviewSectionState,
 ): SectionState[] {
-	const summaryIdx = sections.findIndex((s) => s.kind === "review_summary");
-	if (summaryIdx === -1) return [...sections, updated];
-	return [
-		...sections.slice(0, summaryIdx),
-		updated,
-		...sections.slice(summaryIdx),
-	];
+	return [...withoutReviewSummarySections(sections), updated];
+}
+
+function restoredCurrentSectionId(
+	requested: string | null,
+	sections: SectionState[],
+): string | null {
+	const normalized =
+		requested === "spec" || requested === REVIEW_SUMMARY_SECTION_ID
+			? null
+			: requested;
+	if (normalized && sections.some((section) => section.id === normalized)) {
+		return normalized;
+	}
+	return sections[0]?.id ?? null;
 }
 
 function normalizeRestoredDraft(draft: CommentDraftState): CommentDraftState {
@@ -907,16 +904,16 @@ export const useApp = create<AppState>((set) => ({
 			"section.current_id": snapshot.current_section_id,
 			"section.count": snapshot.sections.length,
 		});
-		const restoredSections = withReviewSummaryLast(
+		const restoredSections = withoutReviewSummarySections(
 			snapshot.sections.map(restoreSectionFeedbackLoaded),
 		);
 		set({
 			session,
 			sections: restoredSections,
-			currentSectionId:
-				snapshot.current_section_id === "spec"
-					? PR_DESCRIPTION_SECTION_ID
-					: snapshot.current_section_id,
+			currentSectionId: restoredCurrentSectionId(
+				snapshot.current_section_id,
+				restoredSections,
+			),
 			processingSectionIds: [],
 			...emptyChatState(session.session_id),
 			commentDrafts: snapshot.comment_drafts.map(normalizeRestoredDraft),
@@ -988,7 +985,7 @@ export const useApp = create<AppState>((set) => ({
 					.map((section) => [section.id, section]),
 			);
 			return {
-				sections: withReviewSummaryLast([
+				sections: [
 					...(prDescription ? [prDescription] : []),
 					...entries.map((e): ReviewSectionState => {
 						const existing = existingReviewSections.get(e.section_id);
@@ -1009,7 +1006,7 @@ export const useApp = create<AppState>((set) => ({
 							feedbackLoaded,
 						};
 					}),
-				]),
+				],
 			};
 		}),
 
@@ -1057,7 +1054,7 @@ export const useApp = create<AppState>((set) => ({
 					normalizedSection.grill_questions.length,
 			});
 			return {
-				sections: nextSections,
+				sections: withoutReviewSummarySections(nextSections),
 				processingSectionIds: removeProcessingSectionId(
 					state.processingSectionIds,
 					section.section_id,
@@ -1102,7 +1099,7 @@ export const useApp = create<AppState>((set) => ({
 				"section.grill_question_count": section.grill_questions.length,
 			});
 			return {
-				sections: nextSections,
+				sections: withoutReviewSummarySections(nextSections),
 				processingSectionIds: addProcessingSectionId(
 					state.processingSectionIds,
 					update.section_id,

@@ -44,7 +44,6 @@ import {
 	type SectionFeedbackNote,
 } from "@/lib/sectionFeedback";
 import { MarkdownViewer } from "./MarkdownViewer";
-import { ReviewSummaryView } from "./ReviewSummaryView";
 import { stripMarkdownForSummary } from "@/lib/markdownContent";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
@@ -169,7 +168,7 @@ function GrillQuestionAnnotation({
 	const questionAnswerPanelClassName =
 		"min-w-0 overflow-hidden rounded border border-border/60 bg-background/60 px-2 py-1.5";
 	const questionAnswerMarkdownClassName =
-		"min-w-0 [overflow-wrap:anywhere] [&_*]:min-w-0 [&_*]:[overflow-wrap:anywhere] [&_code]:whitespace-normal [&_pre]:whitespace-pre-wrap";
+		"min-w-0 [white-space:break-spaces] [overflow-wrap:anywhere] [&_*]:min-w-0 [&_*]:[white-space:break-spaces] [&_*]:[overflow-wrap:anywhere]";
 
 	const sendAnswer = useCallback(
 		async (value: string) => {
@@ -312,7 +311,13 @@ function SectionFeedbackAnnotation({
 	);
 }
 
-function SectionNotesPanel({ notes }: { notes: SectionFeedbackNote[] }) {
+function SectionNotesPanel({
+	notes,
+	onAnswer,
+}: {
+	notes: SectionFeedbackNote[];
+	onAnswer?: (note: SectionFeedbackNote, answer: string) => Promise<void>;
+}) {
 	if (notes.length === 0) return null;
 	return (
 		<div className="rounded-md border border-border bg-card/60 px-3 py-2.5">
@@ -325,6 +330,7 @@ function SectionNotesPanel({ notes }: { notes: SectionFeedbackNote[] }) {
 						key={index}
 						note={note}
 						showLocation
+						onAnswer={onAnswer}
 					/>
 				))}
 			</div>
@@ -367,7 +373,11 @@ function annotationVersionKey(
 						note.severity ?? "",
 						note.file_path ?? "",
 						note.line ?? "",
+						note.question_id ?? "",
+						note.title ?? "",
 						note.text,
+						note.pr_choice ?? "",
+						note.recommended_answer ?? "",
 					].join(":"),
 				)
 				.join("|"),
@@ -1065,10 +1075,6 @@ export function DiffPane() {
 		);
 	}
 
-	if (current.kind === "review_summary") {
-		return <ReviewSummaryView />;
-	}
-
 	if (current.kind === "review_section" && !section) {
 		return (
 			<section
@@ -1125,7 +1131,10 @@ export function DiffPane() {
 					</div>
 				)}
 				{!loading && !loadError && (
-					<SectionNotesPanel notes={sectionTopNotes} />
+					<SectionNotesPanel
+						notes={sectionTopNotes}
+						onAnswer={sendGrillQuestionAnswer}
+					/>
 				)}
 				{!loading &&
 					!loadError &&

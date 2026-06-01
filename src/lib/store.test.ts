@@ -240,7 +240,7 @@ test("refreshSessionMetadata updates PR metadata without rebuilding review state
 	assert.equal(state.currentSectionId, "api");
 	assert.deepEqual(
 		state.sections.map((section: SectionState) => section.id),
-		["pr-description", "api", "review-summary"],
+		["pr-description", "api"],
 	);
 	assert.deepEqual(
 			state.chatTabs.map((tab: ChatTab) => tab.id),
@@ -319,7 +319,7 @@ test("setSectionMap keeps PR description first and appends agent sections", asyn
 		useApp
 			.getState()
 			.sections.map((section: SectionState) => section.id),
-		["pr-description", "overview", "tests", "review-summary"],
+		["pr-description", "overview", "tests"],
 	);
 	assert.equal(useApp.getState().sections[0]?.kind, "pr_description");
 	assert.equal(useApp.getState().currentSectionId, "pr-description");
@@ -1732,7 +1732,7 @@ test("setCommentMarked sets the marked flag", async () => {
 	assert.equal(useApp.getState().commentDrafts[0]?.marked, false);
 });
 
-test("setSectionMap appends Review Summary as the last section", async () => {
+test("setSectionMap does not append a Review Summary section", async () => {
 	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
 	await resetReviewState();
 	useApp.getState().setSession(prSession);
@@ -1742,16 +1742,17 @@ test("setSectionMap appends Review Summary as the last section", async () => {
 	]);
 
 	const sections = useApp.getState().sections;
-	const last = sections[sections.length - 1];
-	assert.equal(last?.kind, "review_summary");
-	assert.equal(last?.id, "review-summary");
 	assert.equal(
 		sections.filter((s: SectionState) => s.kind === "review_summary").length,
-		1,
+		0,
+	);
+	assert.deepEqual(
+		sections.map((section: SectionState) => section.id),
+		["pr-description", "api"],
 	);
 });
 
-test("upsertSection keeps the Review Summary pinned last", async () => {
+test("upsertSection appends late sections without a Review Summary section", async () => {
 	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
 	await resetReviewState();
 	useApp.getState().setSession(prSession);
@@ -1773,14 +1774,17 @@ test("upsertSection keeps the Review Summary pinned last", async () => {
 	});
 
 	const sections = useApp.getState().sections;
-	assert.equal(sections[sections.length - 1]?.kind, "review_summary");
 	assert.equal(
 		sections.filter((s: SectionState) => s.kind === "review_summary").length,
-		1,
+		0,
+	);
+	assert.deepEqual(
+		sections.map((section: SectionState) => section.id),
+		["pr-description", "api", "added-late"],
 	);
 });
 
-test("upsertSectionProgress keeps the Review Summary pinned last", async () => {
+test("upsertSectionProgress appends late sections without a Review Summary section", async () => {
 	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
 	await resetReviewState();
 	useApp.getState().setSession(prSession);
@@ -1796,19 +1800,22 @@ test("upsertSectionProgress keeps the Review Summary pinned last", async () => {
 	});
 
 	const sections = useApp.getState().sections;
-	assert.equal(sections[sections.length - 1]?.kind, "review_summary");
 	assert.equal(
 		sections.filter((s: SectionState) => s.kind === "review_summary").length,
-		1,
+		0,
+	);
+	assert.deepEqual(
+		sections.map((section: SectionState) => section.id),
+		["pr-description", "api", "progress-late"],
 	);
 });
 
-test("restoreSavedReview pins one summary last and maps legacy approved drafts", async () => {
+test("restoreSavedReview drops legacy summaries and maps legacy approved drafts", async () => {
 	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
 	await resetReviewState();
 
 	useApp.getState().restoreSavedReview(prSession, {
-		current_section_id: "api",
+		current_section_id: "review-summary",
 		sections: [
 			{
 				id: "review-summary",
@@ -1837,11 +1844,15 @@ test("restoreSavedReview pins one summary last and maps legacy approved drafts",
 	});
 
 	const sections = useApp.getState().sections;
-	assert.equal(sections[sections.length - 1]?.kind, "review_summary");
 	assert.equal(
 		sections.filter((s: SectionState) => s.kind === "review_summary").length,
-		1,
+		0,
 	);
+	assert.deepEqual(
+		sections.map((section: SectionState) => section.id),
+		["api"],
+	);
+	assert.equal(useApp.getState().currentSectionId, "api");
 	const [draft] = useApp.getState().commentDrafts;
 	assert.equal(draft?.marked, true);
 	assert.equal(draft?.status, "pending");

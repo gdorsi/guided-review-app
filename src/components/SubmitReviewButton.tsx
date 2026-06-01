@@ -12,6 +12,10 @@ import { cn } from "@/lib/utils";
 
 type Mode = "comment" | "approve" | "review_md";
 
+interface SubmitReviewButtonProps {
+	compact?: boolean;
+}
+
 const MODES: { id: Mode; label: string; description: string; github: boolean }[] = [
 	{
 		id: "comment",
@@ -33,7 +37,7 @@ const MODES: { id: Mode; label: string; description: string; github: boolean }[]
 	},
 ];
 
-export function SubmitReviewButton() {
+export function SubmitReviewButton({ compact = false }: SubmitReviewButtonProps) {
 	const session = useApp((s) => s.session);
 	const drafts = useApp((s) => s.commentDrafts);
 	const updateCommentDraft = useApp((s) => s.updateCommentDraft);
@@ -47,6 +51,8 @@ export function SubmitReviewButton() {
 	const [done, setDone] = useState<string | null>(null);
 
 	const effectiveMode: Mode = githubAvailable ? mode : "review_md";
+	const selectedMode = MODES.find((m) => m.id === effectiveMode) ?? MODES[0];
+	const submitLabel = selectedMode.label;
 	const disabled = busy || marked.length === 0 || !session;
 
 	async function run() {
@@ -100,16 +106,32 @@ export function SubmitReviewButton() {
 	}
 
 	return (
-		<div className="space-y-2">
-			<div className="inline-flex overflow-hidden rounded-md border border-[oklch(0.5_0.15_155)]">
+		<div className={cn("space-y-2", compact && "space-y-1.5")}>
+			<div
+				className={cn(
+					compact ? "flex w-full" : "inline-flex",
+					"overflow-hidden rounded-md border border-[oklch(0.5_0.15_155)]",
+				)}
+			>
 				<button
 					type="button"
 					onClick={run}
 					disabled={disabled}
-					className="inline-flex items-center gap-2 bg-[oklch(0.6_0.15_155)] px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-[oklch(0.55_0.15_155)] disabled:opacity-50"
+					className={cn(
+						"inline-flex min-w-0 items-center gap-1.5 bg-[oklch(0.6_0.15_155)] font-semibold text-white transition-colors hover:bg-[oklch(0.55_0.15_155)] disabled:opacity-50",
+						compact ? "flex-1" : "",
+						compact ? "px-2.5 py-1.5 text-xs" : "px-4 py-2 text-sm",
+					)}
 				>
-					{busy && <LoaderCircle className="size-3.5 animate-spin" />}
-					Submit review
+					{busy && (
+						<LoaderCircle
+							className={cn(
+								"shrink-0 animate-spin",
+								compact ? "size-3" : "size-3.5",
+							)}
+						/>
+					)}
+					<span className="truncate">{submitLabel}</span>
 				</button>
 				<DropdownMenu.Root>
 					<DropdownMenu.Trigger asChild>
@@ -117,16 +139,24 @@ export function SubmitReviewButton() {
 							type="button"
 							disabled={busy}
 							aria-label="Choose submit mode"
-							className="flex items-center border-l border-[oklch(0.5_0.15_155)] bg-[oklch(0.6_0.15_155)] px-2 text-white transition-colors hover:bg-[oklch(0.55_0.15_155)] disabled:opacity-50"
+							className={cn(
+								"flex shrink-0 items-center border-l border-[oklch(0.5_0.15_155)] bg-[oklch(0.6_0.15_155)] text-white transition-colors hover:bg-[oklch(0.55_0.15_155)] disabled:opacity-50",
+								compact ? "px-1.5" : "px-2",
+							)}
 						>
-							<ChevronDown className="size-4" />
+							<ChevronDown className={compact ? "size-3.5" : "size-4"} />
 						</button>
 					</DropdownMenu.Trigger>
 					<DropdownMenu.Portal>
 						<DropdownMenu.Content
 							align="start"
 							sideOffset={6}
-							className="z-50 w-[360px] rounded-lg border border-border bg-card p-1 shadow-xl"
+							className={cn(
+								"z-50 rounded-lg border border-border bg-card p-1 shadow-xl",
+								compact
+									? "w-[320px] max-w-[calc(100vw-2rem)]"
+									: "w-[360px]",
+							)}
 						>
 							{MODES.map((m) => {
 								const itemDisabled = m.github && !githubAvailable;
@@ -162,11 +192,25 @@ export function SubmitReviewButton() {
 				</DropdownMenu.Root>
 			</div>
 			{marked.length === 0 && (
-				<p className="text-xs text-muted-foreground">
+				<p
+					className={cn(
+						"text-muted-foreground",
+						compact ? "text-[11px]" : "text-xs",
+					)}
+				>
 					Mark at least one comment to submit.
 				</p>
 			)}
-			{done && <p className="text-xs text-[oklch(0.75_0.15_155)]">{done}</p>}
+			{done && (
+				<p
+					className={cn(
+						"text-[oklch(0.75_0.15_155)]",
+						compact ? "text-[11px]" : "text-xs",
+					)}
+				>
+					{done}
+				</p>
+			)}
 		</div>
 	);
 }
