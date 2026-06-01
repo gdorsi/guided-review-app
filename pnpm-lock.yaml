@@ -36,8 +36,8 @@ importers:
         specifier: ^2.7.1
         version: 2.7.1(@opentelemetry/api@1.9.1)
       '@pierre/diffs':
-        specifier: 1.2.0-beta.4
-        version: 1.2.0-beta.4(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
+        specifier: 1.2.5
+        version: 1.2.5(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
       '@radix-ui/react-dialog':
         specifier: ^1.1.15
         version: 1.1.15(@types/react-dom@19.2.3(@types/react@19.2.15))(@types/react@19.2.15)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
@@ -663,14 +663,14 @@ packages:
     resolution: {integrity: sha512-/UhIkaZgPutTFmQ7RnIJGgDXZmtEJ7Dvi86xNTFWcnRxVRNk/aotsqDJYeEvDP+FSMB2SdW+pQzNMcWP0rwuNA==}
     engines: {node: '>=14'}
 
-  '@pierre/diffs@1.2.0-beta.4':
-    resolution: {integrity: sha512-I4OlownVG7hiJl+G4IBHaJMbn90Eiv+jSB4OiI0Hcpxt1uYtyP7y8IW7tSgtdsQOoE5KCr/8+kkwi2MSnY4GDA==}
+  '@pierre/diffs@1.2.5':
+    resolution: {integrity: sha512-uYOz3Kfs5ED0qY0VraUXzylsEKvZPTVdexboM3QKPx/qBZmTT9F3lKAFuPpY5aIrV04sdHtoFCKStyzEu99U2A==}
     peerDependencies:
       react: ^18.3.1 || ^19.0.0
       react-dom: ^18.3.1 || ^19.0.0
 
-  '@pierre/theme@0.0.28':
-    resolution: {integrity: sha512-1j/H/fECBuc9dEvntdWI+l435HZapw+RCJTlqCA6BboQ5TjlnE005j/ROWutXIs8aq5OAc82JI2Kwk4A1WWBgw==}
+  '@pierre/theme@1.0.3':
+    resolution: {integrity: sha512-sWHv11TMoqKxKDgTIk5VbhQjdPhs8DCcBxbjh3mRlS3YOM/OcrWoGX6MM8eBGn9cUu3M46Py0JnxsG2nJaFTuA==}
     engines: {vscode: ^1.0.0}
 
   '@protobufjs/aspromise@1.1.2':
@@ -2599,9 +2599,9 @@ snapshots:
 
   '@opentelemetry/semantic-conventions@1.41.1': {}
 
-  '@pierre/diffs@1.2.0-beta.4(react-dom@19.2.6(react@19.2.6))(react@19.2.6)':
+  '@pierre/diffs@1.2.5(react-dom@19.2.6(react@19.2.6))(react@19.2.6)':
     dependencies:
-      '@pierre/theme': 0.0.28
+      '@pierre/theme': 1.0.3
       '@shikijs/transformers': 3.23.0
       diff: 8.0.3
       hast-util-to-html: 9.0.5
@@ -2610,7 +2610,7 @@ snapshots:
       react-dom: 19.2.6(react@19.2.6)
       shiki: 3.23.0
 
-  '@pierre/theme@0.0.28': {}
+  '@pierre/theme@1.0.3': {}
 
   '@protobufjs/aspromise@1.1.2': {}
 

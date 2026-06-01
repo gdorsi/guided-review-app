@@ -6,8 +6,14 @@ import {
 	useRef,
 	useState,
 } from "react";
-import { MultiFileDiff } from "@pierre/diffs/react";
-import type { DiffLineAnnotation } from "@pierre/diffs";
+import { CodeView, type CodeViewHandle } from "@pierre/diffs/react";
+import {
+	parseDiffFromFile,
+	type CodeViewItem,
+	type CodeViewLineSelection,
+	type DiffLineAnnotation,
+	type LineAnnotation,
+} from "@pierre/diffs";
 import {
 	ChevronDown,
 	ChevronRight,
@@ -22,7 +28,6 @@ import {
 	focusSideToPierreSide,
 	formatDiffFocusHeader,
 	type DiffFocusRange,
-	type DiffFocusSide,
 } from "@/lib/diffFocus";
 import { computeFileDiffStats, isDeletionOnlyDiff } from "@/lib/diffStats";
 import { recordClientTelemetry, recordClientTelemetryError } from "@/lib/telemetry";
@@ -83,40 +88,6 @@ function focusRangeToPierreSelection(range: DiffFocusRange) {
 		side,
 		endSide: side,
 	};
-}
-
-function scrollDiffLineIntoView(
-	host: HTMLElement,
-	line: number,
-	side: DiffFocusSide,
-	attempt = 0,
-): void {
-	const container = host.querySelector("diffs-container");
-	const shadowRoot =
-		container instanceof HTMLElement ? container.shadowRoot : null;
-	if (!shadowRoot) {
-		if (attempt < 30) {
-			window.requestAnimationFrame(() =>
-				scrollDiffLineIntoView(host, line, side, attempt + 1),
-			);
-		}
-		return;
-	}
-	const preferredType =
-		side === "RIGHT" ? "change-addition" : "change-deletion";
-	const target =
-		shadowRoot.querySelector(
-			`[data-line="${line}"][data-line-type="${preferredType}"]`,
-		) ?? shadowRoot.querySelector(`[data-line="${line}"]`);
-	if (!(target instanceof HTMLElement)) {
-		if (attempt < 30) {
-			window.requestAnimationFrame(() =>
-				scrollDiffLineIntoView(host, line, side, attempt + 1),
-			);
-		}
-		return;
-	}
-	target.scrollIntoView({ behavior: "smooth", block: "center" });
 }
 
 function feedbackLocation(note: SectionFeedbackNote): string | null {
@@ -188,169 +159,77 @@ function SectionNotesPanel({ notes }: { notes: SectionFeedbackNote[] }) {
 	);
 }
 
-function DiffFileCard({
-	bundle,
-	collapsed,
-	sectionFeedbackAnnotations,
-	toggleFileCollapsed,
-}: {
-	bundle: FileBundle;
-	collapsed: boolean;
-	sectionFeedbackAnnotations: DiffLineAnnotation<SectionFeedbackAnnotationMetadata>[];
-	toggleFileCollapsed: (filePath: string) => void;
-}) {
-	const activeFocus = useApp((s) => {
-		const focus = s.diffFocus;
-		if (!focus || focus.file_path !== bundle.file_path) return null;
-		if (focus.source === "agent") return focus;
-		if (focus.mode === "navigation") return focus;
-		return null;
-	});
-	const publishedComments = useApp((s) => s.publishedComments);
+function hashStringPart(hash: number, value: string): number {
+	let next = hash;
+	for (let index = 0; index < value.length; index++) {
+		next ^= value.charCodeAt(index);
+		next = Math.imul(next, 16777619);
+	}
+	return next >>> 0;
+}
 
-	const oldFile = useMemo(
-		() => ({ name: bundle.file_path, contents: bundle.oldText }),
-		[bundle.file_path, bundle.oldText],
-	);
-	const newFile = useMemo(
-		() => ({ name: bundle.file_path, contents: bundle.newText }),
-		[bundle.file_path, bundle.newText],
-	);
+function hashString(value: string): string {
+	return hashStringPart(2166136261, value).toString(36);
+}
 
-	const selectedLines = useMemo(
-		() => (activeFocus ? focusRangeToPierreSelection(activeFocus) : null),
-		[activeFocus],
-	);
+function annotationVersionKey(
+	annotation:
+		| LineAnnotation<DiffAnnotationMetadata>
+		| DiffLineAnnotation<DiffAnnotationMetadata>,
+): string {
+	const side = "side" in annotation ? annotation.side : "";
+	const metadata = annotation.metadata;
+	if (isSectionFeedbackAnnotation(metadata)) {
+		return [
+			"feedback",
+			side,
+			annotation.lineNumber,
+			metadata.file_path,
+			metadata.line,
+			metadata.notes
+				.map((note) =>
+					[
+						note.kind,
+						note.label,
+						note.severity ?? "",
+						note.file_path ?? "",
+						note.line ?? "",
+						note.text,
+					].join(":"),
+				)
+				.join("|"),
+		].join("\0");
+	}
+	const { comment } = metadata;
+	return [
+		"comment",
+		side,
+		annotation.lineNumber,
+		comment.id,
+		comment.body,
+		comment.file_path ?? "",
+		comment.line ?? "",
+		comment.side ?? "",
+		comment.original_line ?? "",
+		comment.original_side ?? "",
+		comment.is_outdated ? "1" : "0",
+	].join("\0");
+}
 
-	const lineAnnotations = useMemo(
-		(): DiffLineAnnotation<DiffAnnotationMetadata>[] => {
-			const published = publishedComments
-				.filter((comment) => comment.file_path === bundle.file_path)
-				.map(publishedCommentToDiffAnnotation)
-				.filter(
-					(
-						annotation,
-					): annotation is DiffLineAnnotation<PublishedCommentAnnotationMetadata> =>
-						annotation !== null,
-				);
-			const sectionFeedback = sectionFeedbackAnnotations.filter(
-				(annotation) => annotation.metadata.file_path === bundle.file_path,
-			);
-			return [...published, ...sectionFeedback];
-		},
-		[publishedComments, sectionFeedbackAnnotations, bundle.file_path],
-	);
-
-	const hostRef = useRef<HTMLDivElement>(null);
-
-	useEffect(() => {
-		if (collapsed) return;
-		if (!activeFocus || activeFocus.mode !== "navigation") return;
-		const host = hostRef.current;
-		if (!host) return;
-		scrollDiffLineIntoView(host, activeFocus.start_line, activeFocus.side);
-	}, [activeFocus, collapsed]);
-
-	const renderAnnotation = useCallback(
-		(annotation: DiffLineAnnotation<DiffAnnotationMetadata>) => {
-			if (isSectionFeedbackAnnotation(annotation.metadata)) {
-				return (
-					<SectionFeedbackAnnotation notes={annotation.metadata.notes} />
-				);
-			}
-			const { comment } = annotation.metadata;
-			return (
-				<div className="border-l-2 border-[oklch(0.7_0.16_155)] bg-[oklch(0.2_0.05_155)]/35 px-2 py-1 text-xs">
-					<div className="mb-0.5 flex items-center justify-between gap-2 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
-						<span>{comment.author_login}</span>
-						<a
-							href={comment.html_url}
-							target="_blank"
-							rel="noreferrer"
-							className="text-[oklch(0.75_0.15_155)] hover:underline"
-						>
-							GitHub
-						</a>
-					</div>
-					<div className="whitespace-pre-wrap text-foreground">{comment.body}</div>
-				</div>
-			);
-		},
-		[],
-	);
-
-	const noteCount = lineAnnotations.length;
-	const hasAgentNotes = sectionFeedbackAnnotations.some(
-		(annotation) => annotation.metadata.file_path === bundle.file_path,
-	);
-	const ChevronIcon = collapsed ? ChevronRight : ChevronDown;
-
-	const renderHeaderPrefix = useCallback(
-		() => (
-			<button
-				type="button"
-				onClick={() => toggleFileCollapsed(bundle.file_path)}
-				aria-expanded={!collapsed}
-				title={collapsed ? "Expand file" : "Collapse file"}
-				className="-ml-1 inline-flex size-5 items-center justify-center rounded text-muted-foreground hover:bg-muted focus:outline-none focus-visible:ring-1 focus-visible:ring-primary"
-			>
-				<ChevronIcon className="size-3.5" />
-			</button>
-		),
-		[ChevronIcon, bundle.file_path, collapsed, toggleFileCollapsed],
-	);
-
-	const renderHeaderMetadata = useCallback(() => {
-		if (noteCount === 0 && !hasAgentNotes) return null;
-		return (
-			<span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground">
-				{noteCount > 0 && (
-					<span className="inline-flex items-center gap-0.5 rounded border border-border/60 bg-background/60 px-1 py-0.5">
-						<MessageSquare className="size-3" />
-						<span className="tabular-nums">{noteCount}</span>
-					</span>
-				)}
-				{hasAgentNotes && (
-					<span
-						title="Reviewed by the agent"
-						className="inline-flex items-center text-primary"
-					>
-						<Sparkles className="size-3" />
-					</span>
-				)}
-			</span>
-		);
-	}, [hasAgentNotes, noteCount]);
-
-	const options = useMemo(
-		() => ({
-			theme: "pierre-dark" as const,
-			diffStyle: "unified" as const,
-			enableLineSelection: false,
-			collapsed,
-		}),
-		[collapsed],
-	);
-
-	return (
-		<div
-			ref={hostRef}
-			data-file-path={bundle.file_path}
-			data-expanded={collapsed ? "false" : "true"}
-			className="relative overflow-hidden rounded-md border border-border bg-card"
-		>
-			<MultiFileDiff
-				oldFile={oldFile}
-				newFile={newFile}
-				options={options}
-				lineAnnotations={lineAnnotations}
-				selectedLines={selectedLines}
-				renderAnnotation={renderAnnotation}
-				renderHeaderPrefix={renderHeaderPrefix}
-				renderHeaderMetadata={renderHeaderMetadata}
-			/>
-		</div>
-	);
+function codeViewItemVersion(
+	bundle: FileBundle,
+	collapsed: boolean,
+	annotations: DiffLineAnnotation<DiffAnnotationMetadata>[],
+): number {
+	let hash = 2166136261;
+	hash = hashStringPart(hash, bundle.file_path);
+	hash = hashStringPart(hash, bundle.oldText);
+	hash = hashStringPart(hash, bundle.newText);
+	hash = hashStringPart(hash, collapsed ? "collapsed" : "expanded");
+	for (const annotation of annotations) {
+		hash = hashStringPart(hash, annotationVersionKey(annotation));
+	}
+	return hash;
 }
 
 export function DiffPane() {
@@ -395,6 +274,7 @@ export function DiffPane() {
 	const [agentFocusLabel, setAgentFocusLabel] = useState<string | null>(null);
 	const [collapsedFiles, setCollapsedFiles] = useState<Record<string, true>>({});
 	const scrollContainerRef = useRef<HTMLElement>(null);
+	const codeViewRef = useRef<CodeViewHandle<DiffAnnotationMetadata>>(null);
 	const openFiles = useCallback((filePaths: string[]) => {
 		setCollapsedFiles((current) => {
 			let changed = false;
@@ -524,6 +404,7 @@ export function DiffPane() {
 
 	useEffect(() => {
 		scrollContainerRef.current?.scrollTo({ top: 0 });
+		codeViewRef.current?.scrollTo({ type: "position", position: 0 });
 	}, [currentId]);
 
 	useEffect(() => {
@@ -590,6 +471,169 @@ export function DiffPane() {
 		});
 	}, []);
 
+	const codeViewState = useMemo((): {
+		items: CodeViewItem<DiffAnnotationMetadata>[];
+		error: string | null;
+	} => {
+		try {
+			const publishedByFile = new Map<
+				string,
+				DiffLineAnnotation<DiffAnnotationMetadata>[]
+			>();
+			for (const comment of publishedComments) {
+				const annotation = publishedCommentToDiffAnnotation(comment);
+				if (!annotation || !comment.file_path) continue;
+				const annotations = publishedByFile.get(comment.file_path) ?? [];
+				annotations.push(annotation);
+				publishedByFile.set(comment.file_path, annotations);
+			}
+
+			const feedbackByFile = new Map<
+				string,
+				DiffLineAnnotation<DiffAnnotationMetadata>[]
+			>();
+			for (const annotation of sectionFeedbackAnnotations) {
+				const annotations =
+					feedbackByFile.get(annotation.metadata.file_path) ?? [];
+				annotations.push(annotation);
+				feedbackByFile.set(annotation.metadata.file_path, annotations);
+			}
+
+			const items = bundles.map((b): CodeViewItem<DiffAnnotationMetadata> => {
+				const annotations = [
+					...(publishedByFile.get(b.file_path) ?? []),
+					...(feedbackByFile.get(b.file_path) ?? []),
+				];
+				const collapsed = Boolean(collapsedFiles[b.file_path]);
+				const oldFile = {
+					name: b.file_path,
+					contents: b.oldText,
+					cacheKey: `${b.file_path}:old:${hashString(b.oldText)}`,
+				};
+				const newFile = {
+					name: b.file_path,
+					contents: b.newText,
+					cacheKey: `${b.file_path}:new:${hashString(b.newText)}`,
+				};
+				return {
+					id: b.file_path,
+					type: "diff",
+					fileDiff: parseDiffFromFile(oldFile, newFile),
+					annotations,
+					collapsed,
+					version: codeViewItemVersion(b, collapsed, annotations),
+				};
+			});
+			return { items, error: null };
+		} catch (error) {
+			return { items: [], error: String(error) };
+		}
+	}, [bundles, collapsedFiles, publishedComments, sectionFeedbackAnnotations]);
+
+	const selectedLines = useMemo<CodeViewLineSelection | null>(() => {
+		if (!diffFocus) return null;
+		if (!visibleFilePaths.has(diffFocus.file_path)) return null;
+		return {
+			id: diffFocus.file_path,
+			range: focusRangeToPierreSelection(diffFocus),
+		};
+	}, [diffFocus, visibleFilePaths]);
+
+	const codeViewOptions = useMemo(
+		() => ({
+			theme: "pierre-dark" as const,
+			diffStyle: "unified" as const,
+			enableLineSelection: false,
+			layout: {
+				paddingTop: 0,
+				paddingBottom: 0,
+				gap: 16,
+			},
+		}),
+		[],
+	);
+
+	const renderAnnotation = useCallback(
+		(
+			annotation:
+				| LineAnnotation<DiffAnnotationMetadata>
+				| DiffLineAnnotation<DiffAnnotationMetadata>,
+		) => {
+			if (isSectionFeedbackAnnotation(annotation.metadata)) {
+				return (
+					<SectionFeedbackAnnotation notes={annotation.metadata.notes} />
+				);
+			}
+			const { comment } = annotation.metadata;
+			return (
+				<div className="border-l-2 border-[oklch(0.7_0.16_155)] bg-[oklch(0.2_0.05_155)]/35 px-2 py-1 text-xs">
+					<div className="mb-0.5 flex items-center justify-between gap-2 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+						<span>{comment.author_login}</span>
+						<a
+							href={comment.html_url}
+							target="_blank"
+							rel="noreferrer"
+							className="text-[oklch(0.75_0.15_155)] hover:underline"
+						>
+							GitHub
+						</a>
+					</div>
+					<div className="whitespace-pre-wrap text-foreground">{comment.body}</div>
+				</div>
+			);
+		},
+		[],
+	);
+
+	const renderHeaderPrefix = useCallback(
+		(item: CodeViewItem<DiffAnnotationMetadata>) => {
+			const collapsed = Boolean(item.collapsed);
+			const ChevronIcon = collapsed ? ChevronRight : ChevronDown;
+			return (
+				<button
+					type="button"
+					onClick={() => toggleFileCollapsed(item.id)}
+					aria-expanded={!collapsed}
+					title={collapsed ? "Expand file" : "Collapse file"}
+					className="-ml-1 inline-flex size-5 items-center justify-center rounded text-muted-foreground hover:bg-muted focus:outline-none focus-visible:ring-1 focus-visible:ring-primary"
+				>
+					<ChevronIcon className="size-3.5" />
+				</button>
+			);
+		},
+		[toggleFileCollapsed],
+	);
+
+	const renderHeaderMetadata = useCallback(
+		(item: CodeViewItem<DiffAnnotationMetadata>) => {
+			const annotations = item.annotations ?? [];
+			const noteCount = annotations.length;
+			const hasAgentNotes = annotations.some((annotation) =>
+				isSectionFeedbackAnnotation(annotation.metadata),
+			);
+			if (noteCount === 0 && !hasAgentNotes) return null;
+			return (
+				<span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground">
+					{noteCount > 0 && (
+						<span className="inline-flex items-center gap-0.5 rounded border border-border/60 bg-background/60 px-1 py-0.5">
+							<MessageSquare className="size-3" />
+							<span className="tabular-nums">{noteCount}</span>
+						</span>
+					)}
+					{hasAgentNotes && (
+						<span
+							title="Reviewed by the agent"
+							className="inline-flex items-center text-primary"
+						>
+							<Sparkles className="size-3" />
+						</span>
+					)}
+				</span>
+			);
+		},
+		[],
+	);
+
 	useEffect(() => {
 		if (allFilePaths.length === 0) return;
 		const onKey = (event: KeyboardEvent) => {
@@ -616,14 +660,37 @@ export function DiffPane() {
 	}, [allFilePaths, collapseAll, expandAll]);
 
 	useEffect(() => {
-		if (!diffFocus || loading || loadError) return;
+		if (!diffFocus || loading || loadError || codeViewState.error) return;
 		const visible = bundles.some((b) => b.file_path === diffFocus.file_path);
 		if (!visible) {
 			setDiffFocusError(
 				`${diffFocus.file_path} is not visible in the current diff section.`,
 			);
 		}
-	}, [bundles, diffFocus, loading, loadError, setDiffFocusError]);
+	}, [
+		bundles,
+		diffFocus,
+		loading,
+		loadError,
+		codeViewState.error,
+		setDiffFocusError,
+	]);
+
+	useEffect(() => {
+		if (!diffFocus || !visibleFilePaths.has(diffFocus.file_path)) return;
+		if (collapsedFiles[diffFocus.file_path]) return;
+		const frame = window.requestAnimationFrame(() => {
+			codeViewRef.current?.scrollTo({
+				type: "line",
+				id: diffFocus.file_path,
+				lineNumber: diffFocus.start_line,
+				side: focusSideToPierreSide(diffFocus.side),
+				align: "center",
+				behavior: "smooth-auto",
+			});
+		});
+		return () => window.cancelAnimationFrame(frame);
+	}, [collapsedFiles, diffFocus, visibleFilePaths]);
 
 	useEffect(() => {
 		recordClientTelemetry("client.diff.current_section.evaluated", {
@@ -771,9 +838,9 @@ export function DiffPane() {
 	return (
 		<section
 			ref={scrollContainerRef}
-			className="flex h-full min-h-0 min-w-0 flex-col overflow-y-auto"
+			className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden"
 		>
-			<div className="flex flex-col gap-4 p-4">
+			<div className="flex shrink-0 flex-col gap-4 p-4 pb-3">
 				{agentFocusLabel && (
 					<div className="inline-flex w-fit items-center gap-1.5 rounded border border-primary/40 bg-primary/10 px-2 py-1 font-mono text-[11px] text-primary">
 						<LocateFixed className="size-3" />
@@ -788,6 +855,11 @@ export function DiffPane() {
 						{loadError}
 					</div>
 				)}
+				{!loading && !loadError && codeViewState.error && (
+					<div className="rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-xs text-destructive-foreground">
+						{codeViewState.error}
+					</div>
+				)}
 				{diffFocusError && (
 					<div className="rounded-md border border-primary/40 bg-primary/10 px-3 py-2 text-xs text-primary">
 						{diffFocusError}
@@ -798,6 +870,7 @@ export function DiffPane() {
 				)}
 				{!loading &&
 					!loadError &&
+					!codeViewState.error &&
 					bundles.length === 0 &&
 					sectionIsProcessing &&
 					section!.files.length === 0 && (
@@ -807,49 +880,58 @@ export function DiffPane() {
 					)}
 				{!loading &&
 					!loadError &&
+					!codeViewState.error &&
 					bundles.length === 0 &&
 					!(sectionIsProcessing && section!.files.length === 0) && (
-					<div className="rounded-md border border-border bg-card/40 px-4 py-3 text-sm text-muted-foreground">
-						No textual changes in the listed files.
-					</div>
-				)}
-				{!loading && !loadError && bundles.length > 0 && (
-					<div className="flex items-center gap-2 text-xs">
-						<button
-							type="button"
-							onClick={expandAll}
-							className="rounded border border-border bg-card/60 px-2 py-1 text-muted-foreground hover:bg-muted/60"
-							title="Expand all files (e)"
-						>
-							Expand all
-							<kbd className="ml-1.5 rounded border border-border/70 bg-background px-1 py-px font-mono text-[10px]">
-								e
-							</kbd>
-						</button>
-						<button
-							type="button"
-							onClick={collapseAll}
-							className="rounded border border-border bg-card/60 px-2 py-1 text-muted-foreground hover:bg-muted/60"
-							title="Collapse all files (c)"
-						>
-							Collapse all
-							<kbd className="ml-1.5 rounded border border-border/70 bg-background px-1 py-px font-mono text-[10px]">
-								c
-							</kbd>
-						</button>
-					</div>
-				)}
-				{bundles.map((b) => (
-					<DiffFileCard
-						key={b.file_path}
-						bundle={b}
-						collapsed={Boolean(collapsedFiles[b.file_path])}
-						sectionFeedbackAnnotations={sectionFeedbackAnnotations}
-						toggleFileCollapsed={toggleFileCollapsed}
-					/>
-				))}
+						<div className="rounded-md border border-border bg-card/40 px-4 py-3 text-sm text-muted-foreground">
+							No textual changes in the listed files.
+						</div>
+					)}
+				{!loading &&
+					!loadError &&
+					!codeViewState.error &&
+					codeViewState.items.length > 0 && (
+						<div className="flex items-center gap-2 text-xs">
+							<button
+								type="button"
+								onClick={expandAll}
+								className="rounded border border-border bg-card/60 px-2 py-1 text-muted-foreground hover:bg-muted/60"
+								title="Expand all files (e)"
+							>
+								Expand all
+								<kbd className="ml-1.5 rounded border border-border/70 bg-background px-1 py-px font-mono text-[10px]">
+									e
+								</kbd>
+							</button>
+							<button
+								type="button"
+								onClick={collapseAll}
+								className="rounded border border-border bg-card/60 px-2 py-1 text-muted-foreground hover:bg-muted/60"
+								title="Collapse all files (c)"
+							>
+								Collapse all
+								<kbd className="ml-1.5 rounded border border-border/70 bg-background px-1 py-px font-mono text-[10px]">
+									c
+								</kbd>
+							</button>
+						</div>
+					)}
 			</div>
-
+			{!loading &&
+				!loadError &&
+				!codeViewState.error &&
+				codeViewState.items.length > 0 && (
+					<CodeView
+						ref={codeViewRef}
+						items={codeViewState.items}
+						options={codeViewOptions}
+						selectedLines={selectedLines}
+						renderAnnotation={renderAnnotation}
+						renderHeaderPrefix={renderHeaderPrefix}
+						renderHeaderMetadata={renderHeaderMetadata}
+						className="mx-4 mb-4 min-h-0 flex-1 rounded-md border border-border bg-card"
+					/>
+				)}
 		</section>
 	);
 }

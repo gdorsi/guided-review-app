@@ -106,6 +106,17 @@ test("DiffView disables Pierre line selection", async () => {
 	assert.doesNotMatch(source, /onLineSelected/);
 });
 
+test("DiffView uses Pierre CodeView instead of per-file MultiFileDiff", async () => {
+	const source = await readFile(
+		new URL("./DiffView.tsx", import.meta.url),
+		"utf8",
+	);
+
+	assert.match(source, /import \{ CodeView/);
+	assert.match(source, /<CodeView/);
+	assert.doesNotMatch(source, /MultiFileDiff/);
+});
+
 test("DiffView offers a feedback request for preview-only sections", async () => {
 	const source = await readFile(
 		new URL("./DiffView.tsx", import.meta.url),
