@@ -15,6 +15,7 @@ export interface SectionFeedbackNote {
 	title?: string;
 	pr_choice?: string;
 	recommended_answer?: string;
+	agrees_with_pr?: boolean;
 }
 
 export interface SectionFeedbackAnnotationMetadata {
@@ -62,7 +63,7 @@ function questionNote(question: GrillQuestion): SectionFeedbackNote | null {
 	const text = question.question.trim();
 	if (!text) return null;
 	const location = questionLocation(question);
-	return {
+	const note: SectionFeedbackNote = {
 		kind: "grill_question",
 		label: "Question",
 		question_id: question.question_id,
@@ -73,6 +74,10 @@ function questionNote(question: GrillQuestion): SectionFeedbackNote | null {
 		file_path: location.file_path,
 		line: location.line,
 	};
+	if (typeof question.agrees_with_pr === "boolean") {
+		note.agrees_with_pr = question.agrees_with_pr;
+	}
+	return note;
 }
 
 function lineFeedbackNotes(section: ReviewSection): SectionFeedbackNote[] {

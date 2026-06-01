@@ -170,5 +170,13 @@ test("DiffView renders grill questions as answerable inline annotations", async 
 	assert.match(source, /onAnswer=\{sendGrillQuestionAnswer\}/);
 	assert.match(source, /note\.pr_choice \?\? ""/);
 	assert.match(source, /note\.recommended_answer \?\? ""/);
+	assert.match(source, /setGrillQuestionChoice/);
+	assert.match(source, /selectedAnswer/);
+	assert.match(source, /LoaderCircle/);
+	assert.match(source, /Sending/);
+	assert.match(source, /readOnly=\{sending\}/);
+	assert.doesNotMatch(source, /setAnswer\(""\)/);
+	assert.doesNotMatch(source, /sendAnswer\(note\.pr_choice \?\? ""\)/);
+	assert.doesNotMatch(source, /sendAnswer\(note\.recommended_answer \?\? ""\)/);
 	assert.doesNotMatch(source, /current\?\.kind === "grill_question"/);
 });

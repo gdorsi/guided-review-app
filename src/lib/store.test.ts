@@ -1732,6 +1732,156 @@ test("setCommentMarked sets the marked flag", async () => {
 	assert.equal(useApp.getState().commentDrafts[0]?.marked, false);
 });
 
+test("setGrillQuestionChoice records the PR choice on the matching question only", async () => {
+	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
+	await resetReviewState();
+	useApp.getState().setSession(prSession);
+	useApp.getState().upsertSection({
+		schema_version: 1,
+		section_id: "api",
+		title: "API",
+		intent: "Review API choices.",
+		files: ["src/api.ts"],
+		ranges: [],
+		concerns: [],
+		grill_questions: [
+			{
+				question_id: "error-policy",
+				title: "Error policy",
+				question: "Should malformed JSON keep going?",
+				pr_choice: "Keep going.",
+				recommended_answer: "Fail closed.",
+			},
+			{
+				question_id: "auth-policy",
+				title: "Auth policy",
+				question: "Should auth be required?",
+				pr_choice: "Require auth.",
+				recommended_answer: "Allow anonymous.",
+			},
+		],
+		base_ref: repo.base_ref,
+		head_ref: repo.head_ref,
+		pause_prompt: "",
+	});
+
+	useApp.getState().setGrillQuestionChoice("api", "error-policy", true);
+
+	const apiSection = useApp
+		.getState()
+		.sections.find((section: SectionState) => section.id === "api");
+	assert.equal(apiSection?.kind, "review_section");
+	const questions =
+		apiSection?.kind === "review_section"
+			? apiSection.section?.grill_questions
+			: [];
+	assert.equal(questions?.[0]?.agrees_with_pr, true);
+	assert.equal(questions?.[1]?.agrees_with_pr, undefined);
+});
+
+test("setGrillQuestionChoice records the recommendation and leaves unrelated sections unchanged", async () => {
+	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
+	await resetReviewState();
+	useApp.getState().setSession(prSession);
+	useApp.getState().upsertSection({
+		schema_version: 1,
+		section_id: "api",
+		title: "API",
+		intent: "Review API choices.",
+		files: ["src/api.ts"],
+		ranges: [],
+		concerns: [],
+		grill_questions: [
+			{
+				question_id: "error-policy",
+				title: "Error policy",
+				question: "Should malformed JSON keep going?",
+				pr_choice: "Keep going.",
+				recommended_answer: "Fail closed.",
+				agrees_with_pr: true,
+			},
+		],
+		base_ref: repo.base_ref,
+		head_ref: repo.head_ref,
+		pause_prompt: "",
+	});
+	useApp.getState().upsertSection({
+		schema_version: 1,
+		section_id: "ui",
+		title: "UI",
+		intent: "Review UI choices.",
+		files: ["src/ui.ts"],
+		ranges: [],
+		concerns: [],
+		grill_questions: [
+			{
+				question_id: "button-policy",
+				title: "Button policy",
+				question: "Should this button send immediately?",
+				pr_choice: "Send immediately.",
+				recommended_answer: "Only flag locally.",
+			},
+		],
+		base_ref: repo.base_ref,
+		head_ref: repo.head_ref,
+		pause_prompt: "",
+	});
+
+	useApp.getState().setGrillQuestionChoice("api", "error-policy", false);
+
+	const apiSection = useApp
+		.getState()
+		.sections.find((section: SectionState) => section.id === "api");
+	const uiSection = useApp
+		.getState()
+		.sections.find((section: SectionState) => section.id === "ui");
+	assert.equal(
+		apiSection?.kind === "review_section"
+			? apiSection.section?.grill_questions[0]?.agrees_with_pr
+			: null,
+		false,
+	);
+	assert.equal(
+		uiSection?.kind === "review_section"
+			? uiSection.section?.grill_questions[0]?.agrees_with_pr
+			: null,
+		undefined,
+	);
+});
+
+test("setGrillQuestionChoice ignores unknown sections and questions", async () => {
+	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
+	await resetReviewState();
+	useApp.getState().setSession(prSession);
+	useApp.getState().upsertSection({
+		schema_version: 1,
+		section_id: "api",
+		title: "API",
+		intent: "Review API choices.",
+		files: ["src/api.ts"],
+		ranges: [],
+		concerns: [],
+		grill_questions: [
+			{
+				question_id: "error-policy",
+				title: "Error policy",
+				question: "Should malformed JSON keep going?",
+				pr_choice: "Keep going.",
+				recommended_answer: "Fail closed.",
+			},
+		],
+		base_ref: repo.base_ref,
+		head_ref: repo.head_ref,
+		pause_prompt: "",
+	});
+	const before = useApp.getState().sections;
+
+	useApp.getState().setGrillQuestionChoice("missing", "error-policy", true);
+	useApp.getState().setGrillQuestionChoice("api", "missing", true);
+
+	assert.deepEqual(useApp.getState().sections, before);
+});
+
 test("setSectionMap does not append a Review Summary section", async () => {
 	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
 	await resetReviewState();

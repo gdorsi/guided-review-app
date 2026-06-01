@@ -253,6 +253,11 @@ export interface AppState {
 	setSectionMap: (entries: SectionMapEntry[]) => void;
 	upsertSection: (section: ReviewSection) => void;
 	upsertSectionProgress: (update: SectionProgressUpdate) => void;
+	setGrillQuestionChoice: (
+		sectionId: string,
+		questionId: string,
+		agreesWithPr: boolean,
+	) => void;
 	markSectionCompleted: (id: string) => void;
 	setCurrentSection: (id: string | null, reason?: string) => void;
 	startSectionProcessing: (id: string) => void;
@@ -1105,6 +1110,44 @@ export const useApp = create<AppState>((set) => ({
 					update.section_id,
 				),
 			};
+		}),
+
+	setGrillQuestionChoice: (sectionId, questionId, agreesWithPr) =>
+		set((state) => {
+			let changed = false;
+			const sections = state.sections.map((section) => {
+				if (
+					section.kind !== "review_section" ||
+					section.id !== sectionId ||
+					!section.section
+				) {
+					return section;
+				}
+				let questionChanged = false;
+				const grillQuestions = section.section.grill_questions.map((question) => {
+					if (question.question_id !== questionId) return question;
+					if (question.agrees_with_pr === agreesWithPr) return question;
+					questionChanged = true;
+					return { ...question, agrees_with_pr: agreesWithPr };
+				});
+				if (!questionChanged) return section;
+				changed = true;
+				return {
+					...section,
+					section: {
+						...section.section,
+						grill_questions: grillQuestions,
+					},
+				};
+			});
+			if (!changed) return {};
+			recordClientTelemetry("client.store.grill_question.choice_set", {
+				"acp.session_id": state.session?.session_id,
+				"section.id": sectionId,
+				"grill.question_id": questionId,
+				"grill.agrees_with_pr": agreesWithPr,
+			});
+			return { sections };
 		}),
 
 	markSectionCompleted: (id) =>

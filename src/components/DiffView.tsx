@@ -17,6 +17,7 @@ import {
 import {
 	ChevronDown,
 	ChevronRight,
+	LoaderCircle,
 	LocateFixed,
 	Send,
 	MessageSquare,
@@ -52,6 +53,7 @@ import {
 	createReviewSnapshot,
 } from "@/lib/reviewPersistence";
 import type { ReviewSection } from "@/lib/types/section";
+import { cn } from "@/lib/utils";
 
 interface FileBundle {
 	file_path: string;
@@ -121,10 +123,12 @@ function SectionFeedbackNoteView({
 	note,
 	showLocation = false,
 	onAnswer,
+	onChoose,
 }: {
 	note: SectionFeedbackNote;
 	showLocation?: boolean;
 	onAnswer?: (note: SectionFeedbackNote, answer: string) => Promise<void>;
+	onChoose?: (note: SectionFeedbackNote, agreesWithPr: boolean) => void;
 }) {
 	if (note.kind === "grill_question") {
 		return (
@@ -132,6 +136,7 @@ function SectionFeedbackNoteView({
 				note={note}
 				showLocation={showLocation}
 				onAnswer={onAnswer}
+				onChoose={onChoose}
 			/>
 		);
 	}
@@ -156,10 +161,12 @@ function GrillQuestionAnnotation({
 	note,
 	showLocation = false,
 	onAnswer,
+	onChoose,
 }: {
 	note: SectionFeedbackNote;
 	showLocation?: boolean;
 	onAnswer?: (note: SectionFeedbackNote, answer: string) => Promise<void>;
+	onChoose?: (note: SectionFeedbackNote, agreesWithPr: boolean) => void;
 }) {
 	const [answer, setAnswer] = useState("");
 	const [sending, setSending] = useState(false);
@@ -169,6 +176,10 @@ function GrillQuestionAnnotation({
 		"min-w-0 overflow-hidden rounded border border-border/60 bg-background/60 px-2 py-1.5";
 	const questionAnswerMarkdownClassName =
 		"min-w-0 [white-space:break-spaces] [overflow-wrap:anywhere] [&_*]:min-w-0 [&_*]:[white-space:break-spaces] [&_*]:[overflow-wrap:anywhere]";
+	const selectedAnswer = note.agrees_with_pr;
+	const selectedChoiceButtonClassName =
+		"border-[oklch(0.5_0.15_155)] bg-[oklch(0.6_0.15_155)] text-white hover:bg-[oklch(0.55_0.15_155)] hover:text-white";
+	const canChoose = Boolean(onChoose && note.question_id);
 
 	const sendAnswer = useCallback(
 		async (value: string) => {
@@ -177,7 +188,6 @@ function GrillQuestionAnnotation({
 			setSending(true);
 			try {
 				await onAnswer(note, body);
-				setAnswer("");
 			} finally {
 				setSending(false);
 			}
@@ -186,6 +196,7 @@ function GrillQuestionAnnotation({
 	);
 
 	function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+		if (sending) return;
 		// Enter sends; Cmd/Ctrl+Enter inserts a newline.
 		if (e.key === "Enter" && !e.shiftKey && !(e.metaKey || e.ctrlKey)) {
 			e.preventDefault();
@@ -247,9 +258,13 @@ function GrillQuestionAnnotation({
 					type="button"
 					size="sm"
 					variant="outline"
-					onClick={() => void sendAnswer(note.pr_choice ?? "")}
-					disabled={sending || !onAnswer || !note.pr_choice}
-					className="h-7"
+					onClick={() => onChoose?.(note, true)}
+					disabled={!canChoose || !note.pr_choice}
+					aria-pressed={selectedAnswer === true}
+					className={cn(
+						"h-7",
+						selectedAnswer === true && selectedChoiceButtonClassName,
+					)}
 				>
 					Agree with PR
 				</Button>
@@ -257,9 +272,13 @@ function GrillQuestionAnnotation({
 					type="button"
 					size="sm"
 					variant="outline"
-					onClick={() => void sendAnswer(note.recommended_answer ?? "")}
-					disabled={sending || !onAnswer || !note.recommended_answer}
-					className="h-7"
+					onClick={() => onChoose?.(note, false)}
+					disabled={!canChoose || !note.recommended_answer}
+					aria-pressed={selectedAnswer === false}
+					className={cn(
+						"h-7",
+						selectedAnswer === false && selectedChoiceButtonClassName,
+					)}
 				>
 					Use recommendation
 				</Button>
@@ -271,7 +290,8 @@ function GrillQuestionAnnotation({
 					onChange={(e) => setAnswer(e.target.value)}
 					onKeyDown={onKeyDown}
 					placeholder="Write a free-form answer…  (Enter to send · ⌘+Enter for newline)"
-					disabled={sending || !onAnswer}
+					disabled={!onAnswer}
+					readOnly={sending}
 					rows={3}
 				/>
 				<div className="flex justify-end">
@@ -282,8 +302,12 @@ function GrillQuestionAnnotation({
 						disabled={sending || !answer.trim() || !onAnswer}
 						className="h-7"
 					>
-						<Send className="size-3.5" />
-						Send
+						{sending ? (
+							<LoaderCircle className="size-3.5 animate-spin" />
+						) : (
+							<Send className="size-3.5" />
+						)}
+						{sending ? "Sending..." : "Send"}
 					</Button>
 				</div>
 			</div>
@@ -294,9 +318,11 @@ function GrillQuestionAnnotation({
 function SectionFeedbackAnnotation({
 	notes,
 	onAnswer,
+	onChoose,
 }: {
 	notes: SectionFeedbackNote[];
 	onAnswer?: (note: SectionFeedbackNote, answer: string) => Promise<void>;
+	onChoose?: (note: SectionFeedbackNote, agreesWithPr: boolean) => void;
 }) {
 	return (
 		<div className="space-y-1 border-l-2 border-primary bg-primary/10 px-2 py-1.5">
@@ -305,6 +331,7 @@ function SectionFeedbackAnnotation({
 					key={index}
 					note={note}
 					onAnswer={onAnswer}
+					onChoose={onChoose}
 				/>
 			))}
 		</div>
@@ -314,9 +341,11 @@ function SectionFeedbackAnnotation({
 function SectionNotesPanel({
 	notes,
 	onAnswer,
+	onChoose,
 }: {
 	notes: SectionFeedbackNote[];
 	onAnswer?: (note: SectionFeedbackNote, answer: string) => Promise<void>;
+	onChoose?: (note: SectionFeedbackNote, agreesWithPr: boolean) => void;
 }) {
 	if (notes.length === 0) return null;
 	return (
@@ -331,6 +360,7 @@ function SectionNotesPanel({
 						note={note}
 						showLocation
 						onAnswer={onAnswer}
+						onChoose={onChoose}
 					/>
 				))}
 			</div>
@@ -378,6 +408,9 @@ function annotationVersionKey(
 						note.text,
 						note.pr_choice ?? "",
 						note.recommended_answer ?? "",
+						typeof note.agrees_with_pr === "boolean"
+							? String(note.agrees_with_pr)
+							: "",
 					].join(":"),
 				)
 				.join("|"),
@@ -428,6 +461,7 @@ export function DiffPane() {
 	const finishSectionProcessing = useApp((s) => s.finishSectionProcessing);
 	const pushError = useApp((s) => s.pushError);
 	const addUserMessage = useApp((s) => s.addUserMessage);
+	const setGrillQuestionChoice = useApp((s) => s.setGrillQuestionChoice);
 	const commentDrafts = useApp((s) => s.commentDrafts);
 	const publishedComments = useApp((s) => s.publishedComments);
 	const publishedCommentsError = useApp((s) => s.publishedCommentsError);
@@ -596,6 +630,13 @@ export function DiffPane() {
 	const visibleFilePaths = useMemo(
 		() => new Set(bundles.map((bundle) => bundle.file_path)),
 		[bundles],
+	);
+	const chooseGrillQuestionAnswer = useCallback(
+		(note: SectionFeedbackNote, agreesWithPr: boolean) => {
+			if (current?.kind !== "review_section" || !note.question_id) return;
+			setGrillQuestionChoice(current.id, note.question_id, agreesWithPr);
+		},
+		[current, setGrillQuestionChoice],
 	);
 	const sectionFeedbackAnnotations = useMemo(
 		() =>
@@ -826,6 +867,7 @@ export function DiffPane() {
 					<SectionFeedbackAnnotation
 						notes={annotation.metadata.notes}
 						onAnswer={sendGrillQuestionAnswer}
+						onChoose={chooseGrillQuestionAnswer}
 					/>
 				);
 			}
@@ -847,7 +889,7 @@ export function DiffPane() {
 				</div>
 			);
 		},
-		[sendGrillQuestionAnswer],
+		[chooseGrillQuestionAnswer, sendGrillQuestionAnswer],
 	);
 
 	const renderHeaderPrefix = useCallback(
@@ -1134,6 +1176,7 @@ export function DiffPane() {
 					<SectionNotesPanel
 						notes={sectionTopNotes}
 						onAnswer={sendGrillQuestionAnswer}
+						onChoose={chooseGrillQuestionAnswer}
 					/>
 				)}
 				{!loading &&
