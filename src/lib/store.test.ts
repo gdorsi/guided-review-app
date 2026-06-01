@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import type { ChatMessage } from "./types/section";
 import type { LocalProject } from "./projectSource";
-import type { AppState, ChatTab, SectionState } from "./store";
+import type { AppState, ChatTab, CommentDraftState, SectionState } from "./store";
 
 const storage = new Map<string, string>();
 
@@ -197,7 +197,7 @@ test("refreshSessionMetadata updates PR metadata without rebuilding review state
 	assert.equal(state.currentSectionId, "api");
 	assert.deepEqual(
 		state.sections.map((section: SectionState) => section.id),
-		["pr-description", "api"],
+		["pr-description", "api", "review-summary"],
 	);
 	assert.deepEqual(
 			state.chatTabs.map((tab: ChatTab) => tab.id),
@@ -276,7 +276,7 @@ test("setSectionMap keeps PR description first and appends agent sections", asyn
 		useApp
 			.getState()
 			.sections.map((section: SectionState) => section.id),
-		["pr-description", "overview", "tests"],
+		["pr-description", "overview", "tests", "review-summary"],
 	);
 	assert.equal(useApp.getState().sections[0]?.kind, "pr_description");
 	assert.equal(useApp.getState().currentSectionId, "pr-description");
@@ -1468,13 +1468,14 @@ test("editCommentDraftBody updates a draft body without changing its status", as
 	]);
 });
 
-test("applyCommentResult removes published drafts", async () => {
+test("applyCommentResult updates published drafts in place", async () => {
 	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
 
 	useApp.setState({
 		commentDrafts: [
 			{
 				id: "draft-123",
+				marked: true,
 				status: "publishing",
 				draft: {
 					kind: "top_level",
@@ -1490,16 +1491,24 @@ test("applyCommentResult removes published drafts", async () => {
 		url: "https://github.com/garden-co/jazz/pull/787#discussion_r1",
 	});
 
-	assert.deepEqual(useApp.getState().commentDrafts, []);
+	const [draft] = useApp.getState().commentDrafts;
+	assert.equal(draft?.id, "draft-123");
+	assert.equal(draft?.status, "published");
+	assert.equal(draft?.marked, true);
+	assert.equal(
+		draft?.url,
+		"https://github.com/garden-co/jazz/pull/787#discussion_r1",
+	);
 });
 
-test("applyCommentResult removes failed drafts", async () => {
+test("applyCommentResult updates failed drafts in place with error status", async () => {
 	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
 
 	useApp.setState({
 		commentDrafts: [
 			{
 				id: "draft-456",
+				marked: true,
 				status: "publishing",
 				draft: {
 					kind: "inline",
@@ -1518,7 +1527,11 @@ test("applyCommentResult removes failed drafts", async () => {
 		error: "GitHub rejected the comment.",
 	});
 
-	assert.deepEqual(useApp.getState().commentDrafts, []);
+	const [draft] = useApp.getState().commentDrafts;
+	assert.equal(draft?.id, "draft-456");
+	assert.equal(draft?.status, "error");
+	assert.equal(draft?.error, "GitHub rejected the comment.");
+	assert.equal(draft?.url, undefined);
 });
 
 test("store does not keep diff file collapse state", async () => {
@@ -1529,4 +1542,169 @@ test("store does not keep diff file collapse state", async () => {
 	assert.doesNotMatch(source, /toggleFileExpanded/);
 	assert.doesNotMatch(source, /expandFiles/);
 	assert.doesNotMatch(source, /collapseAllFiles/);
+});
+
+test("addCommentDraft starts unmarked and pending", async () => {
+	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
+	await resetReviewState();
+
+	useApp.getState().addCommentDraft("draft-1", {
+		kind: "top_level",
+		body: "A note.",
+	});
+
+	const [draft] = useApp.getState().commentDrafts;
+	assert.equal(draft?.marked, false);
+	assert.equal(draft?.status, "pending");
+});
+
+test("setCommentMarked sets the marked flag", async () => {
+	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
+	await resetReviewState();
+	useApp.getState().addCommentDraft("draft-1", { kind: "top_level", body: "x" });
+
+	useApp.getState().setCommentMarked("draft-1", true);
+	assert.equal(useApp.getState().commentDrafts[0]?.marked, true);
+
+	useApp.getState().setCommentMarked("draft-1", false);
+	assert.equal(useApp.getState().commentDrafts[0]?.marked, false);
+});
+
+test("setSectionMap appends Review Summary as the last section", async () => {
+	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
+	await resetReviewState();
+	useApp.getState().setSession(prSession);
+
+	useApp.getState().setSectionMap([
+		{ section_id: "api", title: "API", intent: "x", files: ["a.ts"] },
+	]);
+
+	const sections = useApp.getState().sections;
+	const last = sections[sections.length - 1];
+	assert.equal(last?.kind, "review_summary");
+	assert.equal(last?.id, "review-summary");
+	assert.equal(
+		sections.filter((s: SectionState) => s.kind === "review_summary").length,
+		1,
+	);
+});
+
+test("upsertSection keeps the Review Summary pinned last", async () => {
+	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
+	await resetReviewState();
+	useApp.getState().setSession(prSession);
+	useApp.getState().setSectionMap([
+		{ section_id: "api", title: "API", intent: "x", files: ["a.ts"] },
+	]);
+
+	useApp.getState().upsertSection({
+		schema_version: 1,
+		section_id: "added-late",
+		title: "Late",
+		intent: "y",
+		files: [],
+		ranges: [],
+		concerns: [],
+		base_ref: "origin/main",
+		head_ref: "head",
+		pause_prompt: "",
+	});
+
+	const sections = useApp.getState().sections;
+	assert.equal(sections[sections.length - 1]?.kind, "review_summary");
+	assert.equal(
+		sections.filter((s: SectionState) => s.kind === "review_summary").length,
+		1,
+	);
+});
+
+test("upsertSectionProgress keeps the Review Summary pinned last", async () => {
+	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
+	await resetReviewState();
+	useApp.getState().setSession(prSession);
+	useApp.getState().setSectionMap([
+		{ section_id: "api", title: "API", intent: "x", files: ["a.ts"] },
+	]);
+
+	useApp.getState().upsertSectionProgress({
+		section_id: "progress-late",
+		phase: "started",
+		title: "Progress late",
+		intent: "z",
+	});
+
+	const sections = useApp.getState().sections;
+	assert.equal(sections[sections.length - 1]?.kind, "review_summary");
+	assert.equal(
+		sections.filter((s: SectionState) => s.kind === "review_summary").length,
+		1,
+	);
+});
+
+test("restoreSavedReview pins one summary last and maps legacy approved drafts", async () => {
+	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
+	await resetReviewState();
+
+	useApp.getState().restoreSavedReview(prSession, {
+		current_section_id: "api",
+		sections: [
+			{
+				id: "review-summary",
+				kind: "review_summary",
+				title: "Review Summary",
+				intent: "",
+				status: "in_review",
+			},
+			{
+				id: "api",
+				kind: "review_section",
+				title: "API",
+				intent: "x",
+				status: "in_review",
+			},
+		],
+		comment_drafts: [
+			{
+				id: "legacy",
+				status: "approved",
+				draft: { kind: "top_level", body: "old" },
+			} as CommentDraftState,
+		],
+		published_comments: [],
+		published_comments_error: null,
+	});
+
+	const sections = useApp.getState().sections;
+	assert.equal(sections[sections.length - 1]?.kind, "review_summary");
+	assert.equal(
+		sections.filter((s: SectionState) => s.kind === "review_summary").length,
+		1,
+	);
+	const [draft] = useApp.getState().commentDrafts;
+	assert.equal(draft?.marked, true);
+	assert.equal(draft?.status, "pending");
+});
+
+test("toggleConcernDraft adds a marked draft, then removes it", async () => {
+	const { useApp } = await import(new URL("./store.ts", import.meta.url).href);
+	await resetReviewState();
+
+	const draft = {
+		kind: "inline" as const,
+		body: "[medium] Null check",
+		file_path: "a.ts",
+		line: 4,
+		side: "RIGHT" as const,
+	};
+
+	useApp.getState().toggleConcernDraft("concern:sec1:a.ts:4:abc", draft);
+	let drafts = useApp.getState().commentDrafts;
+	assert.equal(drafts.length, 1);
+	assert.equal(drafts[0]?.id, "concern:sec1:a.ts:4:abc");
+	assert.equal(drafts[0]?.marked, true);
+	assert.equal(drafts[0]?.status, "pending");
+
+	useApp.getState().toggleConcernDraft("concern:sec1:a.ts:4:abc", draft);
+	drafts = useApp.getState().commentDrafts;
+	assert.equal(drafts.length, 0);
 });

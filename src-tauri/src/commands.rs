@@ -8,6 +8,7 @@ use crate::repo::{
     inspect_origin, parse_pr_url, resolve_source, ClonedRepo, DiffPatch, GithubRepoInfo,
     PublishedPrComment, PullRequestMetadata, SessionSource,
 };
+use crate::review_md::{write_review_md, WriteReviewMdArgs};
 use crate::review_persistence::{
     target_from_source, ReviewPersistence, ReviewPersistenceTarget, SaveReviewState,
     SavedReviewRecord,
@@ -795,6 +796,22 @@ pub async fn get_changed_ranges_cmd(
         let head = args.head_ref;
         let files = args.file_paths;
         tokio::task::spawn_blocking(move || get_changed_ranges(&path, &base, &head, &files))
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())
+    }
+    .instrument(span)
+    .await
+}
+
+#[tauri::command]
+pub async fn write_review_md_cmd(
+    args: WriteReviewMdArgs,
+    telemetry_context: Option<TelemetryContext>,
+) -> Result<String, String> {
+    let span = command_span("write_review_md_cmd", telemetry_context.as_ref());
+    async move {
+        tokio::task::spawn_blocking(move || write_review_md(&args))
             .await
             .map_err(|e| e.to_string())?
             .map_err(|e| e.to_string())

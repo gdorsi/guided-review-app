@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Check, Copy } from "lucide-react";
+import { Check, Copy, Plus } from "lucide-react";
 import { SeverityBadge } from "./SeverityBadge";
 import { cn } from "@/lib/utils";
 import type { Concern } from "@/lib/types/section";
@@ -16,9 +16,13 @@ export function formatConcernForCopy(concern: Concern): string {
 export function ConcernItem({
 	concern,
 	onOpenLocation,
+	marked = false,
+	onToggleMarked,
 }: {
 	concern: Concern;
 	onOpenLocation: (concern: Concern) => void;
+	marked?: boolean;
+	onToggleMarked?: (concern: Concern) => void;
 }) {
 	const [copied, setCopied] = useState(false);
 	const copyTimeoutRef = useRef<number | null>(null);
@@ -56,6 +60,28 @@ export function ConcernItem({
 		<li className="group space-y-1 text-xs">
 			<div className="flex items-center justify-between gap-2">
 				<SeverityBadge severity={concern.severity} />
+				<div className="flex items-center gap-1">
+					{onToggleMarked && (
+						<button
+							type="button"
+							onClick={() => onToggleMarked(concern)}
+							aria-pressed={marked}
+							className={cn(
+								"inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium transition-colors focus:outline-hidden focus-visible:ring-1 focus-visible:ring-primary",
+								marked
+									? "bg-primary/15 text-primary"
+									: "border border-border/60 text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+							)}
+							title={marked ? "Remove from review" : "Add to review"}
+						>
+							{marked ? (
+								<Check className="size-3" />
+							) : (
+								<Plus className="size-3" />
+							)}
+							{marked ? "In review" : "Add to review"}
+						</button>
+					)}
 				<button
 					type="button"
 					onClick={copy}
@@ -74,6 +100,7 @@ export function ConcernItem({
 						<Copy className="size-3" />
 					)}
 				</button>
+				</div>
 			</div>
 			<div>{concern.text}</div>
 			{locationLabel && (
@@ -100,10 +127,14 @@ export function FeedbackList({
 	title,
 	concerns,
 	onOpenLocation,
+	isMarked,
+	onToggleMarked,
 }: {
 	title: string;
 	concerns: Concern[];
 	onOpenLocation: (concern: Concern) => void;
+	isMarked?: (concern: Concern) => boolean;
+	onToggleMarked?: (concern: Concern) => void;
 }) {
 	if (concerns.length === 0) return null;
 	return (
@@ -117,6 +148,8 @@ export function FeedbackList({
 						key={index}
 						concern={concern}
 						onOpenLocation={onOpenLocation}
+						marked={isMarked?.(concern) ?? false}
+						onToggleMarked={onToggleMarked}
 					/>
 				))}
 			</ul>

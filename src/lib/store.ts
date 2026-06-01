@@ -35,6 +35,7 @@ export interface SessionInfo {
 }
 
 export const PR_DESCRIPTION_SECTION_ID = "pr-description";
+export const REVIEW_SUMMARY_SECTION_ID = "review-summary";
 export const OVERVIEW_CHAT_TAB_ID = "overview";
 
 function hasSectionFeedback(section: ReviewSection): boolean {
@@ -168,7 +169,14 @@ export interface ReviewSectionState extends BaseSectionState {
 	feedbackLoaded?: boolean;
 }
 
-export type SectionState = PrDescriptionSectionState | ReviewSectionState;
+export interface ReviewSummarySectionState extends BaseSectionState {
+	kind: "review_summary";
+}
+
+export type SectionState =
+	| PrDescriptionSectionState
+	| ReviewSectionState
+	| ReviewSummarySectionState;
 
 export interface ChatTab {
 	id: string;
@@ -179,6 +187,7 @@ export interface ChatTab {
 export interface CommentDraftState {
 	id: string;
 	draft: CommentDraft;
+	marked: boolean;
 	status:
 		| "pending"
 		| "approved"
@@ -261,6 +270,8 @@ export interface AppState {
 	addCommentDraft: (id: string, draft: CommentDraft) => void;
 	updateCommentDraft: (id: string, patch: Partial<CommentDraftState>) => void;
 	editCommentDraftBody: (id: string, body: string) => void;
+	setCommentMarked: (id: string, marked: boolean) => void;
+	toggleConcernDraft: (id: string, draft: CommentDraft) => void;
 	dismissCommentDraft: (id: string) => void;
 	applyCommentResult: (result: CommentResult) => void;
 
@@ -316,6 +327,44 @@ function restoreSectionFeedbackLoaded(section: SectionState): SectionState {
 		...section,
 		feedbackLoaded: inferFeedbackLoaded(section),
 	};
+}
+
+function reviewSummarySection(): ReviewSummarySectionState {
+	return {
+		id: REVIEW_SUMMARY_SECTION_ID,
+		kind: "review_summary",
+		title: "Review Summary",
+		intent: "Marked comments and submit your review.",
+		status: "in_review",
+	};
+}
+
+function withReviewSummaryLast(sections: SectionState[]): SectionState[] {
+	const withoutSummary = sections.filter((s) => s.kind !== "review_summary");
+	return [...withoutSummary, reviewSummarySection()];
+}
+
+function insertReviewSection(
+	sections: SectionState[],
+	updated: ReviewSectionState,
+): SectionState[] {
+	const summaryIdx = sections.findIndex((s) => s.kind === "review_summary");
+	if (summaryIdx === -1) return [...sections, updated];
+	return [
+		...sections.slice(0, summaryIdx),
+		updated,
+		...sections.slice(summaryIdx),
+	];
+}
+
+function normalizeRestoredDraft(draft: CommentDraftState): CommentDraftState {
+	const marked =
+		typeof draft.marked === "boolean" ? draft.marked : draft.status === "approved";
+	const status =
+		draft.status === "approved" || draft.status === "rejected"
+			? "pending"
+			: draft.status;
+	return { ...draft, marked, status };
 }
 
 interface AppendStreamingTextResult {
@@ -763,7 +812,9 @@ export const useApp = create<AppState>((set) => ({
 			"section.current_id": snapshot.current_section_id,
 			"section.count": snapshot.sections.length,
 		});
-		const restoredSections = snapshot.sections.map(restoreSectionFeedbackLoaded);
+		const restoredSections = withReviewSummaryLast(
+			snapshot.sections.map(restoreSectionFeedbackLoaded),
+		);
 		set({
 			session,
 			sections: restoredSections,
@@ -773,7 +824,7 @@ export const useApp = create<AppState>((set) => ({
 					: snapshot.current_section_id,
 			processingSectionIds: [],
 			...emptyChatState(session.session_id),
-			commentDrafts: snapshot.comment_drafts,
+			commentDrafts: snapshot.comment_drafts.map(normalizeRestoredDraft),
 			publishedComments: snapshot.published_comments,
 			publishedCommentsFetchedAt: Date.now(),
 			publishedCommentsError: snapshot.published_comments_error,
@@ -838,7 +889,7 @@ export const useApp = create<AppState>((set) => ({
 					.map((section) => [section.id, section]),
 			);
 			return {
-				sections: [
+				sections: withReviewSummaryLast([
 					...(prDescription ? [prDescription] : []),
 					...entries.map((e): ReviewSectionState => {
 						const existing = existingReviewSections.get(e.section_id);
@@ -859,7 +910,7 @@ export const useApp = create<AppState>((set) => ({
 							feedbackLoaded,
 						};
 					}),
-				],
+				]),
 			};
 		}),
 
@@ -886,8 +937,13 @@ export const useApp = create<AppState>((set) => ({
 				section: normalizedSection,
 				feedbackLoaded: true,
 			};
-			if (idx >= 0) sections[idx] = updated;
-			else sections.push(updated);
+			let nextSections = sections;
+			if (idx >= 0) {
+				nextSections = [...sections];
+				nextSections[idx] = updated;
+			} else {
+				nextSections = insertReviewSection(sections, updated);
+			}
 			recordClientTelemetry("client.store.section.upserted", {
 				"acp.session_id": state.session?.session_id,
 				"section.id": section.section_id,
@@ -899,7 +955,7 @@ export const useApp = create<AppState>((set) => ({
 				"section.file_count": normalizedSection.files.length,
 			});
 			return {
-				sections,
+				sections: nextSections,
 				processingSectionIds: removeProcessingSectionId(
 					state.processingSectionIds,
 					section.section_id,
@@ -925,8 +981,13 @@ export const useApp = create<AppState>((set) => ({
 				section,
 				feedbackLoaded: inferFeedbackLoaded(existing),
 			};
-			if (idx >= 0) sections[idx] = updated;
-			else sections.push(updated);
+			let nextSections = sections;
+			if (idx >= 0) {
+				nextSections = [...sections];
+				nextSections[idx] = updated;
+			} else {
+				nextSections = insertReviewSection(sections, updated);
+			}
 			recordClientTelemetry("client.store.section_progress.upserted", {
 				"acp.session_id": state.session?.session_id,
 				"section.id": update.section_id,
@@ -938,7 +999,7 @@ export const useApp = create<AppState>((set) => ({
 				"section.concern_count": section.concerns.length,
 			});
 			return {
-				sections,
+				sections: nextSections,
 				processingSectionIds: addProcessingSectionId(
 					state.processingSectionIds,
 					update.section_id,
@@ -1368,7 +1429,7 @@ export const useApp = create<AppState>((set) => ({
 		set((state) => ({
 			commentDrafts: [
 				...state.commentDrafts,
-				{ id, draft, status: "pending" },
+				{ id, draft, marked: false, status: "pending" },
 			],
 		})),
 
@@ -1384,6 +1445,26 @@ export const useApp = create<AppState>((set) => ({
 				d.id === id ? { ...d, draft: { ...d.draft, body } } : d,
 			),
 		})),
+	setCommentMarked: (id, marked) =>
+		set((state) => ({
+			commentDrafts: state.commentDrafts.map((d) =>
+				d.id === id ? { ...d, marked } : d,
+			),
+		})),
+	toggleConcernDraft: (id, draft) =>
+		set((state) => {
+			if (state.commentDrafts.some((d) => d.id === id)) {
+				return {
+					commentDrafts: state.commentDrafts.filter((d) => d.id !== id),
+				};
+			}
+			return {
+				commentDrafts: [
+					...state.commentDrafts,
+					{ id, draft, marked: true, status: "pending" },
+				],
+			};
+		}),
 	dismissCommentDraft: (id) =>
 		set((state) => ({
 			commentDrafts: state.commentDrafts.filter((d) => d.id !== id),
@@ -1391,8 +1472,18 @@ export const useApp = create<AppState>((set) => ({
 
 	applyCommentResult: (result) =>
 		set((state) => ({
-			commentDrafts: state.commentDrafts.filter(
-				(d) => d.id !== result.draft_id,
+			commentDrafts: state.commentDrafts.map((d) =>
+				d.id === result.draft_id
+					? {
+							...d,
+							status: result.status === "published" ? "published" : "error",
+							url:
+								result.status === "published"
+									? result.url ?? d.url
+									: undefined,
+							error: result.error,
+						}
+					: d,
 			),
 		})),
 

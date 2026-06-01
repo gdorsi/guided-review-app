@@ -1,12 +1,12 @@
 import type { PublishedPrComment } from "./acp";
-import { AGENT_COMMENT_PUBLISHING_INSTRUCTIONS } from "./commentPublish";
+import { AGENT_REVIEW_PUBLISH_INSTRUCTIONS } from "./commentPublish";
 import { formatPublishedCommentsForPrompt } from "./publishedComments";
 import type { ReviewSnapshot } from "./reviewPersistence";
 import type { SessionInfo } from "./store";
 
 function formatCommentProtocolInstructions(): string {
 	return [
-		"When the user asks to leave a PR comment, emit one `acp-comment-draft` fenced JSON block. The host will preview it and save approved drafts locally.",
+		"When the user asks to leave a PR comment, emit one `acp-comment-draft` fenced JSON block. The host will preview it and keep the draft locally.",
 		"Use this shape for an inline comment:",
 		"```acp-comment-draft",
 		"{",
@@ -19,8 +19,8 @@ function formatCommentProtocolInstructions(): string {
 		"}",
 		"```",
 		"For a top-level PR comment, use `\"kind\": \"top_level\"` and omit `file_path`, `line`, and `side`. Keep `title` at most 5 words.",
-		"When the host asks you to publish approved drafts:",
-		...AGENT_COMMENT_PUBLISHING_INSTRUCTIONS,
+		"When the host asks you to submit the review:",
+		...AGENT_REVIEW_PUBLISH_INSTRUCTIONS,
 		"Result format:",
 		"```acp-comment-result",
 		"{",

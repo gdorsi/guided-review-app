@@ -10,3 +10,4 @@ certificate-base64.txt
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .tokensave
+.superpowers/
